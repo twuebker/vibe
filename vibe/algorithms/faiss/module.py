@@ -261,9 +261,10 @@ class FaissBinaryIVF(Faiss):
 
 
 class FaissIVFRaBitQ(Faiss):
-    def __init__(self, metric, n_list):
+    def __init__(self, metric, n_list, n_bits):
         self.n_list = n_list
         self.metric = metric
+        self.n_bits = n_bits
 
     def fit(self, X):
         if self.metric in ["cosine", "ip", "normalized"]:
@@ -272,24 +273,29 @@ class FaissIVFRaBitQ(Faiss):
             faiss_metric = faiss.METRIC_L2
 
         d = X.shape[1]
-        factory_string = f"IVF{self.n_list},RaBitQ,Refine(Flat)"
-        self.refine_index = faiss.index_factory(d, factory_string, faiss_metric)
-        self.base_index = faiss.downcast_index(self.refine_index.base_index)
+        factory_string = f"RR{d},IVF{self.n_list},RaBitQfs"
+        if self.n_bits > 1:
+            factory_string += str(self.n_bits)
+
+        self.base_index = faiss.index_factory(d, factory_string, faiss_metric)
+        self.ivf_index = faiss.extract_index_ivf(self.base_index)
 
         if X.dtype != np.float32:
             X = X.astype(np.float32)
         if self.metric == "cosine":
             faiss.normalize_L2(X)
 
-        self.refine_index.train(X)
-        self.refine_index.add(X)
+        self.base_index.train(X)
+        self.base_index.add(X)
+
+        self.refine_index = faiss.IndexRefineFlat(self.base_index, faiss.swig_ptr(X))
 
         faiss.omp_set_num_threads(1)
 
     def set_query_arguments(self, n_probe, k_factor):
         self.n_probe = n_probe
         self.k_factor = k_factor
-        self.base_index.nprobe = self.n_probe
+        self.ivf_index.nprobe = self.n_probe
         self.refine_index.k_factor = self.k_factor
         if self.k_factor == 0:
             self.index = self.base_index
@@ -297,7 +303,7 @@ class FaissIVFRaBitQ(Faiss):
             self.index = self.refine_index
 
     def __str__(self):
-        return "FaissIVFRaBitQ(n_list=%d, n_probe=%d, k_factor=%d)" % (self.n_list, self.n_probe, self.k_factor)
+        return "FaissIVFRaBitQ(n_list=%d, n_bits=%d, n_probe=%d, k_factor=%d)" % (self.n_list, self.n_bits, self.n_probe, self.k_factor)
 
 
 class FaissHNSW(Faiss):
