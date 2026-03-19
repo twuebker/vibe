@@ -12,7 +12,7 @@ class Annoy(BaseANN):
             "cosine": "angular",
             "euclidean": "euclidean",
             "ip": "dot",
-            "normalized": "dot",
+            "normalized": "euclidean",
             "hamming": "hamming",
         }[metric]
 
