@@ -12,7 +12,7 @@ class PyNNDescent(BaseANN):
         self.metric = {
             "cosine": "dot",
             "euclidean": "euclidean",
-            "normalized": "dot",
+            "normalized": "euclidean",
             "hamming": "bit_hamming",
         }[metric]
 
