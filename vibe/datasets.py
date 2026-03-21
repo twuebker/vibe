@@ -44,6 +44,22 @@ def quantize_uint8(embeddings, starts, steps):
     return ((embeddings - starts) / steps).astype(numpy.uint8)
 
 
+def quantize_int8(embeddings, steps):
+    """
+    Quantizes embedding vectors to int8 representation.
+
+    Args:
+        embeddings (numpy.ndarray): Input embedding vectors to be quantized.
+        steps (numpy.ndarray): Per-dimension step sizes for symmetric quantization.
+
+    Returns:
+        numpy.ndarray: Quantized embeddings as int8 values.
+    """
+    import numpy
+
+    return numpy.clip(numpy.rint(embeddings / steps), -127, 127).astype(numpy.int8)
+
+
 def quantize_binary(embeddings):
     """
     Converts embedding vectors to binary representation by thresholding at zero.
@@ -122,17 +138,31 @@ def write_output(
     print(f"test size: {test.shape[0]} * {test.shape[1]}")
 
     if point_type == "uint8":
-        if distance != "euclidean":
-            raise ValueError("Only Euclidean distance is supported with uint8 precision")
+        if distance not in ["euclidean", "cosine"]:
+            raise ValueError("Only Euclidean and cosine distance are supported with uint8 precision")
 
-        print("Quantizing to uint8 precision")
-        ranges = numpy.vstack((numpy.min(train, axis=0), numpy.max(train, axis=0)))
-        starts = ranges[0, :]
-        steps = (ranges[1, :] - ranges[0, :]) / 255
-        train = quantize_uint8(train, starts, steps)
-        test = quantize_uint8(test, starts, steps)
-        if learn is not None:
-            learn = quantize_uint8(learn, starts, steps)
+        if numpy.issubdtype(train.dtype, numpy.floating):
+            print("Quantizing to uint8 precision")
+            ranges = numpy.vstack((numpy.min(train, axis=0), numpy.max(train, axis=0)))
+            starts = ranges[0, :]
+            steps = (ranges[1, :] - ranges[0, :]) / 255
+            train = quantize_uint8(train, starts, steps)
+            test = quantize_uint8(test, starts, steps)
+            if learn is not None:
+                learn = quantize_uint8(learn, starts, steps)
+
+    elif point_type == "int8":
+        if distance not in ["euclidean", "cosine"]:
+            raise ValueError("Only Euclidean and cosine distance are supported with int8 precision")
+
+        if numpy.issubdtype(train.dtype, numpy.floating):
+            print("Quantizing to int8 precision")
+            steps = numpy.max(numpy.abs(train), axis=0) / 127
+            steps[steps == 0] = 1
+            train = quantize_int8(train, steps)
+            test = quantize_int8(test, steps)
+            if learn is not None:
+                learn = quantize_int8(learn, steps)
 
     elif point_type == "binary":
         if distance != "hamming":

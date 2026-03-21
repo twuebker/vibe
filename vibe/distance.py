@@ -6,10 +6,10 @@ from numpy.linalg import norm
 
 
 def euclidean(a, b):
-    if a.dtype == np.uint8:
-        a = a.astype(np.int16)
-    if b.dtype == np.uint8:
-        b = b.astype(np.int16)
+    if np.issubdtype(a.dtype, np.integer) and a.dtype.itemsize == 1:
+        a = a.astype(np.int32)
+    if np.issubdtype(b.dtype, np.integer) and b.dtype.itemsize == 1:
+        b = b.astype(np.int32)
 
     if a.ndim == 1 and b.ndim == 1:
         return norm(a - b)
@@ -23,6 +23,11 @@ def euclidean(a, b):
 
 
 def cosine(a, b):
+    if np.issubdtype(a.dtype, np.integer) and a.dtype.itemsize == 1:
+        a = a.astype(np.float32)
+    if np.issubdtype(b.dtype, np.integer) and b.dtype.itemsize == 1:
+        b = b.astype(np.float32)
+
     # lacks handling for zero vectors as datasets should never have them
     if a.ndim == 1 and b.ndim == 1:
         return np.clip(1 - np.dot(a, b) / (norm(a) * norm(b)), a_min=0, a_max=2)

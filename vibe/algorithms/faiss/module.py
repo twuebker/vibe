@@ -56,10 +56,27 @@ class FaissFlat(Faiss):
                 X_float = X.astype(np.float32)
                 self.index.train(X_float)
                 self.index.add(X_float)
+            elif self.metric == "cosine":
+                self.index = faiss.IndexFlatIP(d)
+                X_float = X.astype(np.float32)
+                faiss.normalize_L2(X_float)
+                self.index.add(X_float)
             elif self.metric == "hamming":
                 self.index = faiss.IndexBinaryFlat(8 * d)
                 self.index.add(X)
                 self.ensure_float = False
+            else:
+                raise ValueError("Unsupported metric for FaissFlat:", self.metric)
+        elif X.dtype == np.int8:
+            X_float = X.astype(np.float32)
+            if self.metric == "euclidean":
+                self.index = faiss.IndexScalarQuantizer(d, faiss.ScalarQuantizer.QT_8bit_direct_signed)
+                self.index.train(X_float)
+                self.index.add(X_float)
+            elif self.metric == "cosine":
+                self.index = faiss.IndexFlatIP(d)
+                faiss.normalize_L2(X_float)
+                self.index.add(X_float)
             else:
                 raise ValueError("Unsupported metric for FaissFlat:", self.metric)
         else:
