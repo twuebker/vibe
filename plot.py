@@ -618,7 +618,6 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
     from matplotlib.patches import Patch
 
     if datasets is None:
-        # Use all datasets present in the parquet, ordered by known groups then alphabetically
         known_order = ID_DATASETS + ID_DATASETS_ADDITIONAL + OOD_DATASETS
         available = set(pca_mahalanobis["dataset"].unique().to_list())
         datasets = [d for d in known_order if d in available] + sorted(
@@ -646,11 +645,18 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
         if dataset.endswith("-binary"):
             title = "-".join(dataset.split("-")[:-3]) + "-binary"
 
-        for part in ["train", "test"]:
+        # FIX 1: plot test first (underneath), then a subsampled train on top.
+        # This prevents the larger train set from being fully buried by test points,
+        # and avoids test dominating visually when it has comparable density.
+        # We subsample train to at most max_train points so it doesn't swamp test either.
+        max_train = 50_000
+        for part in ["test", "train"]:
             p = pdata.filter(pl.col("part") == part)
+            if part == "train" and len(p) > max_train:
+                p = p.sample(max_train, seed=42)
             ax_pca.scatter(
                 p["x"].to_numpy(), p["y"].to_numpy(),
-                s=0.3, alpha=0.6, color=colors[part], rasterized=True,
+                s=0.3, alpha=0.5, color=colors[part], rasterized=True,
             )
         ax_pca.set_xticks([])
         ax_pca.set_yticks([])
@@ -682,18 +688,38 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
     filename = out_dir / "dataset-geometry-grid.pdf"
     print("Writing", filename)
-    fig.savefig(filename, bbox_inches="tight")
+    # FIX 2: dpi=300 sets the raster resolution for the embedded scatter bitmaps.
+    # Without this, matplotlib defaults to 100 DPI for rasterized elements in PDFs,
+    # which looks blurry when zooming. The KDE curves are still stored as vectors.
+    fig.savefig(filename, bbox_inches="tight", dpi=300)
     plt.close(fig)
-
 
 def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
     # adapted from https://matplotlib.org/matplotblog/posts/create-ridgeplots-in-matplotlib/
     from sklearn.neighbors import KernelDensity
     import numpy as np
 
-    query_stats = (
-        query_stats.filter(pl.col("dataset").is_in(ID_DATASETS + OOD_DATASETS))
+    nan_counts = (
+        query_stats
         .filter(~pl.col("dataset").str.contains("-ip"))
+        .filter(~pl.col("dataset").str.contains("-dot"))
+        .group_by("dataset")
+        .agg(pl.col(x).is_nan().sum().alias("nan_count"))
+        .filter(pl.col("nan_count") > 0)
+        .sort("dataset")
+    )
+    if nan_counts.is_empty():
+        print(f"No NaN values in {x}")
+    else:
+        print(f"NaN rows in {x} per dataset:")
+        for row in nan_counts.iter_rows(named=True):
+            print(f"  {row['dataset']}: {row['nan_count']}")
+
+    query_stats = (
+        query_stats
+        .filter(~pl.col("dataset").str.contains("-ip"))
+        .filter(~pl.col("dataset").str.contains("-dot"))
+        .filter(pl.col(x).is_not_nan())
         .filter(pl.col(x) >= 1)
         .with_columns(mean_x=pl.col(x).mean().over("dataset"))
         .with_columns(
@@ -701,7 +727,7 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
             .then(pl.lit("in-distribution"))
             .when(pl.col("dataset").is_in(OOD_DATASETS))
             .then(pl.lit("out-of-distribution"))
-            .otherwise(pl.lit("unknown-type"))
+            .otherwise(pl.lit("ann-benchmarks"))
             .alias("dataset-type"),
         )
         .sort("mean_x", descending=True)
@@ -712,14 +738,17 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
 
     datasets = query_stats.group_by("dataset").agg(pl.col(x).median()).sort(x, descending=True)["dataset"].to_list()
 
-    plt.figure(figsize=(8, 3))
+    fig_height = max(3, len(datasets) * 0.5)
+    plt.figure(figsize=(8, fig_height))
     ax = plt.gca()
 
     maxx = 3.5
     minx = 0
     for i, dataset in enumerate(datasets):
         pdata = query_stats.filter(pl.col("dataset") == dataset)
-        xvals = pdata[x].to_numpy()
+        xvals = pdata[x].drop_nans().to_numpy()
+        if len(xvals) == 0:
+            continue
         x_d = np.linspace(minx, maxx, 1000)
 
         kde = KernelDensity(bandwidth=0.05, kernel="gaussian")
@@ -727,7 +756,12 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         logprob = kde.score_samples(x_d[:, None])
 
         offset = (len(datasets) - i - 1) * 1.5
-        color = "tab:blue" if dataset in ID_DATASETS else "tab:orange"
+        if dataset in ID_DATASETS:
+            color = "tab:blue"
+        elif dataset in OOD_DATASETS:
+            color = "tab:orange"
+        else:
+            color = "tab:green"
         ax.plot(x_d, offset + np.exp(logprob), color="#f0f0f0", lw=1, zorder=2 * i + 1)
         ax.fill_between(x_d, offset + np.exp(logprob), offset, alpha=1, zorder=2 * i, color=color)
         label = "-".join(dataset.split("-")[:-2])
@@ -1268,11 +1302,16 @@ if __name__ == "__main__":
         dataset_geometry_grid(out_dir, pca_mahalanobis)
         sys.exit(0)
 
+    query_stats = pl.read_parquet(data_dir / "stats.parquet").with_columns(normalize_names)
+
+    if args.plot_type == "difficulty":
+        plot_difficulty_ridgeline(out_dir, query_stats)
+        sys.exit(0)
+
     summary = pl.read_parquet(data_dir / "summary.parquet").with_columns(normalize_names)
     detail = pl.concat([pl.read_parquet(path) for path in data_dir.glob("*__detail.parquet")]).with_columns(
         normalize_names
     )
-    query_stats = pl.read_parquet(data_dir / "stats.parquet").with_columns(normalize_names)
 
     datasets = args.dataset.split(",")
     count = int(args.count)
@@ -1351,8 +1390,6 @@ if __name__ == "__main__":
             k=count,
             gpu=args.gpu,
         )
-    elif args.plot_type == "difficulty":
-        plot_difficulty_ridgeline(out_dir, query_stats)
     elif args.plot_type == "performance-gap":
         if len(datasets) != 2:
             raise ValueError("plot type performance-gap requires two datasets")

@@ -14,5 +14,9 @@ data/*
 #!results/*.png
 #*.parquet
 #plots/*.png
+website/_site/*
 
-venv
+.venv
+.claude
+.idea
+vibe.log
