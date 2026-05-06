@@ -212,9 +212,13 @@ def export_query_stats(data_dir, output_file):
             try:
                 with h5py.File(path) as hfp:
                     name = path.name.replace(".hdf5", "")
-                    distances = hfp["distances"][:]
+                    distances = hfp["distances"][:].astype(np.float32)
+                    if distances.ndim != 2:
+                        print(f"Skipping {path.name}: 'distances' is not a 2-D array (jaccard/sparse format?)")
+                        pbar.update(1)
+                        continue
                     if "avg_distances" in hfp:
-                        avg_distances = hfp["avg_distances"][:]
+                        avg_distances = hfp["avg_distances"][:].astype(np.float32)
                     else:
                         metric = hfp.attrs.get("distance", "euclidean")
                         print(f"Computing approximate avg_distances for {path.name} (metric={metric})")
@@ -226,8 +230,9 @@ def export_query_stats(data_dir, output_file):
                         if k > n_neighbors:
                             continue
                         if k > 1:
-                            metrics[f"lid{k}"] = np.array([compute_lid(ds, k) for ds in distances])
-                        metrics[f"rc{k}"] = avg_distances / distances[:, k - 1]
+                            metrics[f"lid{k}"] = np.array([compute_lid(ds, k) for ds in distances], dtype=np.float32)
+                        kth = distances[:, k - 1]
+                        metrics[f"rc{k}"] = np.where(kth > 0, avg_distances / kth, np.float32(np.nan))
                     stats.append(pl.DataFrame(metrics))
             except Exception as e:
                 print(f"Skipping invalid HDF5 file {path}: {e}")
