@@ -10,10 +10,10 @@ images/*
 *.log
 *.sif
 
-results/*
-!results/*.png
-*.parquet
-!website/results/*.parquet
+#results/*
+#results/*.png
+#*.parquet
+#website/results/*.parquet
 plots/*.png
 
 venv
