@@ -179,6 +179,10 @@ def export_query_stats(data_dir, output_file):
             try:
                 with h5py.File(path) as hfp:
                     name = path.name.replace(".hdf5", "")
+                    if "avg_distances" not in hfp:
+                        print(f"Skipping query stats for {path.name}: missing 'avg_distances' (not a VIBE dataset)")
+                        pbar.update(1)
+                        continue
                     distances = hfp["distances"][:]
                     avg_distances = hfp["avg_distances"][:]
                     metrics = dict(dataset=name, query_index=np.arange(distances.shape[0]))
