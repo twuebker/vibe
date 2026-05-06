@@ -3,16 +3,16 @@
 *.o
 
 data/*
-images/*
-plots/*
-!plots/*.pdf
+#images/*
+#plots/*
+#!plots/*.pdf
 
-*.log
-*.sif
+#*.log
+#*.sif
 
-results/*
-!results/*.png
-*.parquet
-plots/*.png
+#results/*
+#!results/*.png
+#*.parquet
+#plots/*.png
 
 venv
