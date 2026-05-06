@@ -263,18 +263,27 @@ def mahalanobis_distance_batch(V, Q):
 
 
 def export_pca_and_mahalanobis(data_dir, output_file, sample_size=2000):
-    if output_file.exists():
-        print(f"Output file {output_file} already exists -- skipping")
-        return
-
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
-    hdf5_files = list(pathlib.Path(data_dir).glob("**/*.hdf5"))
+    already_computed = set()
+    existing_rows = []
+    if output_file.exists():
+        existing = pl.read_parquet(output_file)
+        already_computed = set(existing["dataset"].unique().to_list())
+        existing_rows.append(existing)
+        print(f"Found existing parquet with {len(already_computed)} datasets: {sorted(already_computed)}")
 
-    pcas = []
-    with tqdm(total=len(hdf5_files), desc="Exporting PCA and Mahalanobis data") as pbar:
-        for path in hdf5_files:
+    hdf5_files = list(pathlib.Path(data_dir).glob("**/*.hdf5"))
+    new_files = [p for p in hdf5_files if p.name.replace(".hdf5", "") not in already_computed]
+    if not new_files:
+        print("All datasets already computed — nothing to do.")
+        return
+
+    print(f"Computing PCA/Mahalanobis for {len(new_files)} new dataset(s) (skipping {len(already_computed)} existing)")
+    pcas = existing_rows
+    with tqdm(total=len(new_files), desc="Exporting PCA and Mahalanobis data") as pbar:
+        for path in new_files:
             gen = np.random.default_rng(1234)
 
             try:

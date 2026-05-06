@@ -611,6 +611,80 @@ def split_difficulties_plot(
     plt.close()
 
 
+def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
+    """Grid PDF: PCA scatter + Mahalanobis KDE side by side for every dataset."""
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+    from matplotlib.patches import Patch
+
+    if datasets is None:
+        # Use all datasets present in the parquet, ordered by known groups then alphabetically
+        known_order = ID_DATASETS + ID_DATASETS_ADDITIONAL + OOD_DATASETS
+        available = set(pca_mahalanobis["dataset"].unique().to_list())
+        datasets = [d for d in known_order if d in available] + sorted(
+            available - set(known_order)
+        )
+
+    datasets = [d for d in datasets if d in set(pca_mahalanobis["dataset"].unique().to_list())]
+
+    n = len(datasets)
+    n_rows = math.ceil(n / n_cols)
+    colors = {"train": "#1f77b4", "test": "#ff7f0e"}
+
+    fig = plt.figure(figsize=(n_cols * 4.0, n_rows * 2.5))
+    outer = GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.35)
+
+    for i, dataset in enumerate(datasets):
+        row, col = divmod(i, n_cols)
+        inner = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[row, col], wspace=0.1)
+        ax_pca = fig.add_subplot(inner[0])
+        ax_kde = fig.add_subplot(inner[1])
+
+        pdata = pca_mahalanobis.filter(pl.col("dataset") == dataset)
+
+        title = "-".join(dataset.split("-")[:-2])
+        if dataset.endswith("-binary"):
+            title = "-".join(dataset.split("-")[:-3]) + "-binary"
+
+        for part in ["train", "test"]:
+            p = pdata.filter(pl.col("part") == part)
+            ax_pca.scatter(
+                p["x"].to_numpy(), p["y"].to_numpy(),
+                s=0.3, alpha=0.6, color=colors[part], rasterized=True,
+            )
+        ax_pca.set_xticks([])
+        ax_pca.set_yticks([])
+        ax_pca.set_title(title, fontsize=7, pad=2)
+
+        sns.kdeplot(
+            pdata.to_pandas(),
+            x="mahalanobis_distance_to_data",
+            hue="part",
+            hue_order=["train", "test"],
+            palette=colors,
+            fill=True,
+            legend=False,
+            ax=ax_kde,
+        )
+        ax_kde.set_xticks([])
+        ax_kde.set_yticks([])
+        ax_kde.set_xlabel("")
+        ax_kde.set_ylabel("")
+
+    for i in range(n, n_rows * n_cols):
+        row, col = divmod(i, n_cols)
+        inner = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[row, col], wspace=0.1)
+        for j in range(2):
+            fig.add_subplot(inner[j]).axis("off")
+
+    legend_handles = [Patch(color=colors["train"], label="train"), Patch(color=colors["test"], label="test")]
+    fig.legend(handles=legend_handles, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0), fontsize=8)
+
+    filename = out_dir / "dataset-geometry-grid.pdf"
+    print("Writing", filename)
+    fig.savefig(filename, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
     # adapted from https://matplotlib.org/matplotblog/posts/create-ridgeplots-in-matplotlib/
     from sklearn.neighbors import KernelDensity
@@ -1169,7 +1243,7 @@ if __name__ == "__main__":
     aparser.add_argument("--output", help="the path to the output directory", default="plots")
     aparser.add_argument(
         "--plot-type",
-        help="type of plot (pareto, radar, difficulty, performance-gap, split-difficulties, critdiff, build-time-table)",
+        help="type of plot (pareto, radar, difficulty, performance-gap, split-difficulties, critdiff, build-time-table, dataset-geometry-grid)",
         default="pareto",
     )
     aparser.add_argument("--dataset", help="dataset", default="agnews-mxbai-1024-euclidean")
@@ -1313,6 +1387,8 @@ if __name__ == "__main__":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="build_time")
     elif args.plot_type == "index-size-table":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="index_size")
+    elif args.plot_type == "dataset-geometry-grid":
+        dataset_geometry_grid(out_dir, pca_mahalanobis)
     elif args.plot_type == "paper":
         paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis)
     else:
