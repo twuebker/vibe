@@ -12,6 +12,7 @@
 
 import pathlib
 import os
+import sys
 import math
 import argparse
 import itertools
@@ -1261,12 +1262,17 @@ if __name__ == "__main__":
 
     normalize_names = pl.col("dataset")
 
+    pca_mahalanobis = pl.read_parquet(data_dir / "data-pca-mahalanobis.parquet").with_columns(normalize_names)
+
+    if args.plot_type == "dataset-geometry-grid":
+        dataset_geometry_grid(out_dir, pca_mahalanobis)
+        sys.exit(0)
+
     summary = pl.read_parquet(data_dir / "summary.parquet").with_columns(normalize_names)
     detail = pl.concat([pl.read_parquet(path) for path in data_dir.glob("*__detail.parquet")]).with_columns(
         normalize_names
     )
     query_stats = pl.read_parquet(data_dir / "stats.parquet").with_columns(normalize_names)
-    pca_mahalanobis = pl.read_parquet(data_dir / "data-pca-mahalanobis.parquet").with_columns(normalize_names)
 
     datasets = args.dataset.split(",")
     count = int(args.count)
@@ -1387,8 +1393,6 @@ if __name__ == "__main__":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="build_time")
     elif args.plot_type == "index-size-table":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="index_size")
-    elif args.plot_type == "dataset-geometry-grid":
-        dataset_geometry_grid(out_dir, pca_mahalanobis)
     elif args.plot_type == "paper":
         paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis)
     else:
