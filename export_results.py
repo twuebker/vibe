@@ -381,9 +381,9 @@ def export_pca_and_mahalanobis(data_dir, output_file, sample_size=2000):
                 dict(
                     dataset=name,
                     part=np.concatenate((np.repeat("train", train.shape[0]), np.repeat("test", test.shape[0]))),
-                    x=combined_pca[:, 0],
-                    y=combined_pca[:, 1],
-                    mahalanobis_distance_to_data=mahalanobis_combined,
+                    x=combined_pca[:, 0].astype(np.float32),
+                    y=combined_pca[:, 1].astype(np.float32),
+                    mahalanobis_distance_to_data=mahalanobis_combined.astype(np.float32),
                 )
             )
             pcas.append(df)
