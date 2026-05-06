@@ -4,7 +4,7 @@
 
 data/*
 images/*
-plots/*
+!plots/*
 !plots/*.pdf
 
 *.log
