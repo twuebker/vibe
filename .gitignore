@@ -5,6 +5,7 @@
 data/*
 images/*
 plots/*
+!plots/*.pdf
 
 *.log
 *.sif
