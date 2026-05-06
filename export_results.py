@@ -170,6 +170,39 @@ def compute_lid(distances, k):
     return -valid / s
 
 
+def _approx_avg_distances(train, queries, metric, sample_size=100_000, batch_size=512):
+    """
+    Approximate mean distance from each query to all training vectors by sampling.
+    Uses batched BLAS matrix multiplies — no Faiss required.
+    """
+    rng = np.random.default_rng(42)
+    sample = train[np.sort(rng.choice(train.shape[0], min(train.shape[0], sample_size), replace=False))]
+    sample = sample.astype(np.float32)
+
+    # Pre-normalise sample for cosine/angular metrics
+    if metric in ("cosine", "angular", "normalized"):
+        norms = np.linalg.norm(sample, axis=1, keepdims=True)
+        sample = sample / np.where(norms > 0, norms, 1)
+
+    avg_dists = np.empty(len(queries), dtype=np.float32)
+    for i in range(0, len(queries), batch_size):
+        q = queries[i : i + batch_size].astype(np.float32)
+        if metric in ("cosine", "angular"):
+            norms = np.linalg.norm(q, axis=1, keepdims=True)
+            q = q / np.where(norms > 0, norms, 1)
+            avg_dists[i : i + batch_size] = (1 - q @ sample.T).mean(axis=1)
+        elif metric == "normalized":
+            avg_dists[i : i + batch_size] = (1 - q @ sample.T).mean(axis=1)
+        elif metric == "ip":
+            avg_dists[i : i + batch_size] = -(q @ sample.T).mean(axis=1)
+        else:  # euclidean
+            q_sq = np.sum(q**2, axis=1, keepdims=True)
+            x_sq = np.sum(sample**2, axis=1)
+            d_sq = np.maximum(q_sq + x_sq - 2 * (q @ sample.T), 0)
+            avg_dists[i : i + batch_size] = np.sqrt(d_sq).mean(axis=1)
+    return avg_dists
+
+
 def export_query_stats(data_dir, output_file):
     hdf5_files = list(pathlib.Path(data_dir).glob("**/*.hdf5"))
 
@@ -179,14 +212,19 @@ def export_query_stats(data_dir, output_file):
             try:
                 with h5py.File(path) as hfp:
                     name = path.name.replace(".hdf5", "")
-                    if "avg_distances" not in hfp:
-                        print(f"Skipping query stats for {path.name}: missing 'avg_distances' (not a VIBE dataset)")
-                        pbar.update(1)
-                        continue
                     distances = hfp["distances"][:]
-                    avg_distances = hfp["avg_distances"][:]
+                    if "avg_distances" in hfp:
+                        avg_distances = hfp["avg_distances"][:]
+                    else:
+                        metric = hfp.attrs.get("distance", "euclidean")
+                        print(f"Computing approximate avg_distances for {path.name} (metric={metric})")
+                        avg_distances = _approx_avg_distances(hfp["train"][:], hfp["test"][:], metric)
+
+                    n_neighbors = distances.shape[1]
                     metrics = dict(dataset=name, query_index=np.arange(distances.shape[0]))
                     for k in [1, 10, 100]:
+                        if k > n_neighbors:
+                            continue
                         if k > 1:
                             metrics[f"lid{k}"] = np.array([compute_lid(ds, k) for ds in distances])
                         metrics[f"rc{k}"] = avg_distances / distances[:, k - 1]
