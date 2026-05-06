@@ -212,9 +212,14 @@ def export_query_stats(data_dir, output_file):
             try:
                 with h5py.File(path) as hfp:
                     name = path.name.replace(".hdf5", "")
+                    train = hfp["train"][:]
+                    if train.ndim != 2 or not np.issubdtype(train.dtype, np.number):
+                        print(f"Skipping {path.name}: 'train' is not a dense numeric matrix (sparse/jaccard format?)")
+                        pbar.update(1)
+                        continue
                     distances = hfp["distances"][:].astype(np.float32)
                     if distances.ndim != 2:
-                        print(f"Skipping {path.name}: 'distances' is not a 2-D array (jaccard/sparse format?)")
+                        print(f"Skipping {path.name}: 'distances' is not a 2-D array")
                         pbar.update(1)
                         continue
                     if "avg_distances" in hfp:
@@ -222,7 +227,7 @@ def export_query_stats(data_dir, output_file):
                     else:
                         metric = hfp.attrs.get("distance", "euclidean")
                         print(f"Computing approximate avg_distances for {path.name} (metric={metric})")
-                        avg_distances = _approx_avg_distances(hfp["train"][:], hfp["test"][:], metric)
+                        avg_distances = _approx_avg_distances(train, hfp["test"][:], metric)
 
                     n_neighbors = distances.shape[1]
                     metrics = dict(dataset=name, query_index=np.arange(distances.shape[0]))
@@ -232,7 +237,8 @@ def export_query_stats(data_dir, output_file):
                         if k > 1:
                             metrics[f"lid{k}"] = np.array([compute_lid(ds, k) for ds in distances], dtype=np.float32)
                         kth = distances[:, k - 1]
-                        metrics[f"rc{k}"] = np.where(kth > 0, avg_distances / kth, np.float32(np.nan))
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            metrics[f"rc{k}"] = np.where(kth > 0, avg_distances / kth, np.float32(np.nan))
                     stats.append(pl.DataFrame(metrics))
             except Exception as e:
                 print(f"Skipping invalid HDF5 file {path}: {e}")
@@ -342,6 +348,11 @@ def export_pca_and_mahalanobis(data_dir, output_file, sample_size=2000):
                 print(f"Invalid dataset file {path} -- skipping")
                 continue
 
+            if train.ndim != 2 or not np.issubdtype(train.dtype, np.number):
+                print(f"Skipping {path} -- not a dense numeric matrix (sparse/jaccard format?)")
+                pbar.update(1)
+                continue
+
             if name.endswith("-binary"):
                 train = np.unpackbits(train).reshape(train.shape[0], -1).astype(np.float32)
                 test = np.unpackbits(test).reshape(test.shape[0], -1).astype(np.float32)
@@ -350,8 +361,9 @@ def export_pca_and_mahalanobis(data_dir, output_file, sample_size=2000):
                 train = train.astype(np.float32)
                 test = test.astype(np.float32)
 
-            mahalanobis_sample_train = train[np.sort(gen.choice(train.shape[0], 100_000, replace=False))]
-            train_sample_indices = np.sort(gen.choice(train.shape[0], sample_size, replace=False))
+            mahal_n = min(train.shape[0], 100_000)
+            mahalanobis_sample_train = train[np.sort(gen.choice(train.shape[0], mahal_n, replace=False))]
+            train_sample_indices = np.sort(gen.choice(train.shape[0], min(train.shape[0], sample_size), replace=False))
             train = train[train_sample_indices]
 
             data_to_data = mahalanobis_distance_batch(train, mahalanobis_sample_train)
