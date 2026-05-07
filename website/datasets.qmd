@@ -49,8 +49,7 @@ viewof selected_dataset = Inputs.table(datasets,{
   width: {
     dataset: 280
   },
-  multiple: false,
-  value: datasets[0]
+  multiple: false
 })
 ```
 
@@ -80,12 +79,13 @@ and the data.
 
 ```{ojs}
 //| output: false
-selected_data = db.sql`select * from vizdata where dataset = ${selected_dataset.dataset}`;
+selected_dataset_name = selected_dataset ? selected_dataset.dataset : null;
+selected_data = selected_dataset_name ? db.sql`select * from vizdata where dataset = ${selected_dataset_name}` : [];
 kde = require('fast-kde');
-distances_data = db.sql`select mahalanobis_distance_to_data from vizdata where dataset = ${selected_dataset.dataset} and part = 'train'`;
-density_data = kde.density1d(distances_data.map(d => d.mahalanobis_distance_to_data), { bandwidth: 3, bins: 512, pad: 4 });
-distances_query = db.sql`select mahalanobis_distance_to_data from vizdata where dataset = ${selected_dataset.dataset} and part = 'test'`;
-density_query = kde.density1d(distances_query.map(d => d.mahalanobis_distance_to_data), { bandwidth: 3, bins: 512, pad: 4 });
+distances_data = selected_dataset_name ? db.sql`select mahalanobis_distance_to_data from vizdata where dataset = ${selected_dataset_name} and part = 'train'` : [];
+density_data = distances_data.length > 0 ? kde.density1d(distances_data.map(d => d.mahalanobis_distance_to_data), { bandwidth: 3, bins: 512, pad: 4 }) : null;
+distances_query = selected_dataset_name ? db.sql`select mahalanobis_distance_to_data from vizdata where dataset = ${selected_dataset_name} and part = 'test'` : [];
+density_query = distances_query.length > 0 ? kde.density1d(distances_query.map(d => d.mahalanobis_distance_to_data), { bandwidth: 3, bins: 512, pad: 4 }) : null;
 
 bw = 1;
 ```
@@ -109,8 +109,8 @@ Plot.plot({
   y: {axis: null},
   x: {label: "Mahalanobis distance distribution to data"},
   marks: [
-    Plot.lineY(density_data.bandwidth(bw), {x: 'x', y: 'y', stroke: '#1f77b4', fill: '#1f77b4', fillOpacity: 0.5 }),
-    Plot.lineY(density_query.bandwidth(bw), {x: 'x', y: 'y', stroke: '#ff7f0e', fill: '#ff7f0e', fillOpacity: 0.5 }),
+    ...(density_data ? [Plot.lineY(density_data.bandwidth(bw), {x: 'x', y: 'y', stroke: '#1f77b4', fill: '#1f77b4', fillOpacity: 0.5 })] : []),
+    ...(density_query ? [Plot.lineY(density_query.bandwidth(bw), {x: 'x', y: 'y', stroke: '#ff7f0e', fill: '#ff7f0e', fillOpacity: 0.5 })] : []),
     Plot.ruleY([0])
   ]
 })

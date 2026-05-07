@@ -421,9 +421,10 @@ def pareto_plot(
                 a.spines[:].set_color("black")
                 a.set_xticks([])
                 a.set_yticks([])
-            for part in pca_m_data["part"].unique():
+            inset_colors = {"train": "#ff7f0e", "test": "#1f77b4"}
+            for part in ["train", "test"]:
                 pdata = pca_m_data.filter(pl.col("part") == part)
-                axins[0].scatter(pdata["x"], pdata["y"], s=0.1)
+                axins[0].scatter(pdata["x"], pdata["y"], s=0.1, color=inset_colors[part])
             sns.kdeplot(
                 pca_m_data,
                 x="mahalanobis_distance_to_data",
@@ -629,7 +630,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
     n = len(datasets)
     n_rows = math.ceil(n / n_cols)
-    colors = {"train": "#1f77b4", "test": "#ff7f0e"}
+    colors = {"train": "#ff7f0e", "test": "#1f77b4"}
 
     fig = plt.figure(figsize=(n_cols * 4.0, n_rows * 2.5))
     outer = GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.35)
@@ -663,6 +664,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
             hue_order=["train", "test"],
             palette=colors,
             fill=True,
+            common_norm=False,
             legend=False,
             ax=ax_kde,
         )
@@ -677,7 +679,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
         for j in range(2):
             fig.add_subplot(inner[j]).axis("off")
 
-    legend_handles = [Patch(color=colors["train"], label="train"), Patch(color=colors["test"], label="test")]
+    legend_handles = [Patch(color=colors["train"], label="data"), Patch(color=colors["test"], label="queries")]
     fig.legend(handles=legend_handles, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0), fontsize=8)
 
     filename = out_dir / "dataset-geometry-grid.pdf"
