@@ -421,7 +421,7 @@ def pareto_plot(
                 a.spines[:].set_color("black")
                 a.set_xticks([])
                 a.set_yticks([])
-            inset_colors = {"train": "#ff7f0e", "test": "#1f77b4"}
+            inset_colors = {"train": "#1f77b4", "test": "#ff7f0e"}
             for part in ["train", "test"]:
                 pdata = pca_m_data.filter(pl.col("part") == part)
                 axins[0].scatter(pdata["x"], pdata["y"], s=0.1, color=inset_colors[part])
@@ -630,7 +630,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
     n = len(datasets)
     n_rows = math.ceil(n / n_cols)
-    colors = {"train": "#ff7f0e", "test": "#1f77b4"}
+    colors = {"train": "#1f77b4", "test": "#ff7f0e"}
 
     fig = plt.figure(figsize=(n_cols * 4.0, n_rows * 2.5))
     outer = GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.35)

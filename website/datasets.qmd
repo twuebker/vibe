@@ -97,6 +97,7 @@ Plot.plot({
   width: width/4,
   height: width/4,
   axis: null,
+  color: {domain: ["train", "test"], range: ["#1f77b4", "#ff7f0e"]},
   marks: [
     Plot.dot(selected_data, {x: "x", y: "y", stroke: "part"})
   ]
