@@ -618,6 +618,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
     from matplotlib.patches import Patch
 
     if datasets is None:
+        # Use all datasets present in the parquet, ordered by known groups then alphabetically
         known_order = ID_DATASETS + ID_DATASETS_ADDITIONAL + OOD_DATASETS
         available = set(pca_mahalanobis["dataset"].unique().to_list())
         datasets = [d for d in known_order if d in available] + sorted(
@@ -645,18 +646,11 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
         if dataset.endswith("-binary"):
             title = "-".join(dataset.split("-")[:-3]) + "-binary"
 
-        # FIX 1: plot test first (underneath), then a subsampled train on top.
-        # This prevents the larger train set from being fully buried by test points,
-        # and avoids test dominating visually when it has comparable density.
-        # We subsample train to at most max_train points so it doesn't swamp test either.
-        max_train = 50_000
-        for part in ["test", "train"]:
+        for part in ["train", "test"]:
             p = pdata.filter(pl.col("part") == part)
-            if part == "train" and len(p) > max_train:
-                p = p.sample(max_train, seed=42)
             ax_pca.scatter(
                 p["x"].to_numpy(), p["y"].to_numpy(),
-                s=0.3, alpha=0.5, color=colors[part], rasterized=True,
+                s=0.3, alpha=0.6, color=colors[part], rasterized=True,
             )
         ax_pca.set_xticks([])
         ax_pca.set_yticks([])
@@ -688,11 +682,9 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
     filename = out_dir / "dataset-geometry-grid.pdf"
     print("Writing", filename)
-    # FIX 2: dpi=300 sets the raster resolution for the embedded scatter bitmaps.
-    # Without this, matplotlib defaults to 100 DPI for rasterized elements in PDFs,
-    # which looks blurry when zooming. The KDE curves are still stored as vectors.
-    fig.savefig(filename, bbox_inches="tight", dpi=300)
+    fig.savefig(filename, bbox_inches="tight")
     plt.close(fig)
+
 
 def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
     # adapted from https://matplotlib.org/matplotblog/posts/create-ridgeplots-in-matplotlib/
