@@ -811,8 +811,6 @@ def plot_filtered_rc_ridgeline(
       yfcc_1M           – yfcc_n_queries sampled queries, one natural filter each
     """
     import h5py
-    import json
-    import re
     from sklearn.neighbors import KernelDensity
 
     if data_dir is None:
@@ -878,6 +876,8 @@ def plot_filtered_rc_ridgeline(
     # ------------------------------------------------------------------
     # arxiv_1M
     # ------------------------------------------------------------------
+    UNIFORM_SELS = [1, 3, 5, 10, 20, 30, 40, 50, 75, 90]  # % of 1M train; 100% = unfiltered baseline
+
     arxiv_records = {}
     arxiv_sel_order = []
     arxiv_sel_labels = []
@@ -886,7 +886,6 @@ def plot_filtered_rc_ridgeline(
         stats_a = (
             query_stats.filter(pl.col("dataset") == "arxiv_1M").sort("query_index")
         )
-        aq = pl.read_parquet(data_dir / "arxiv_1M_query_metadata.parquet")
         with h5py.File(data_dir / "arxiv_1M.hdf5", "r") as f:
             n_train = f["train"].shape[0]
             test_vecs = f["test"][:]
@@ -894,21 +893,15 @@ def plot_filtered_rc_ridgeline(
             dMean = stats_a["rc100"].to_numpy() * d_unfiltered
             arxiv_unfiltered = stats_a["rc100"].to_numpy()   # baseline curve
 
-            level_rows = (
-                aq.unique(["selectivity_pct", "id_threshold"])
-                .sort("selectivity_pct")
-                .iter_rows(named=True)
-            )
-            for row in level_rows:
-                threshold = int(row["id_threshold"])
-                sel_pct   = float(row["selectivity_pct"])
-                if threshold < 0 or threshold >= n_train:
+            for pct in UNIFORM_SELS:
+                threshold = round(pct / 100 * n_train)
+                if threshold < k or threshold >= n_train:
                     continue
                 filter_mask = np.arange(n_train) < threshold
                 dk = _brute_force_dk(test_vecs, f["train"], filter_mask, k)
-                arxiv_records[sel_pct] = dMean / np.where(dk > 0, dk, np.nan)
-                arxiv_sel_order.append(sel_pct)
-                arxiv_sel_labels.append(f"{sel_pct:.0f}%")
+                arxiv_records[pct] = dMean / np.where(dk > 0, dk, np.nan)
+                arxiv_sel_order.append(pct)
+                arxiv_sel_labels.append(f"{pct}%")
 
         # append unfiltered baseline at the end (easiest → bottom)
         arxiv_records["unfiltered"] = arxiv_unfiltered
@@ -933,36 +926,25 @@ def plot_filtered_rc_ridgeline(
             .filter(pl.col("query_index") < 50)
             .sort("query_index")
         )
-        wq = pl.read_parquet(data_dir / "wiki_1M_query_metadata.parquet")
         bm = pl.read_parquet(data_dir / "wiki_1M_base_metadata.parquet")
         chunk_ids = bm["chunk_id"].to_numpy()
-        chunk_id_max = int(chunk_ids.max())
-
-        uncorr_conds = json.loads(
-            wq.filter(pl.col("correlation_type") == "uncorrelated")["filter_conditions"][0]
-        )
-        thresholds = sorted(set(
-            int(m.group(1))
-            for c in uncorr_conds
-            if (m := re.search(r"chunk_id\s*<\s*(\d+)", c))
-        ))
 
         with h5py.File(data_dir / "wiki_1M.hdf5", "r") as f:
+            n_train_w = f["train"].shape[0]
             test_vecs = f["test"][:50]
             d_unfiltered = f["distances"][:50, k - 1]
             dMean = stats_w["rc100"].to_numpy() * d_unfiltered
             wiki_unfiltered = stats_w["rc100"].to_numpy()
 
-            for threshold in thresholds:
-                if threshold > chunk_id_max:
-                    # entire 1M set passes → equivalent to unfiltered
-                    continue
+            for pct in UNIFORM_SELS:
+                threshold = round(pct / 100 * n_train_w)
                 filter_mask = chunk_ids < threshold
-                eff_sel = float(filter_mask.mean() * 100)
+                if filter_mask.sum() < k:
+                    continue
                 dk = _brute_force_dk(test_vecs, f["train"], filter_mask, k)
-                wiki_records[threshold] = dMean / np.where(dk > 0, dk, np.nan)
-                wiki_sel_order.append(threshold)
-                wiki_sel_labels.append(f"{eff_sel:.1f}%")
+                wiki_records[pct] = dMean / np.where(dk > 0, dk, np.nan)
+                wiki_sel_order.append(pct)
+                wiki_sel_labels.append(f"{pct}%")
 
         wiki_records["unfiltered"] = wiki_unfiltered
         wiki_sel_order.append("unfiltered")
