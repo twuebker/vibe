@@ -785,6 +785,286 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
     plt.close()
 
 
+def plot_filtered_rc_ridgeline(
+    out_dir,
+    query_stats,
+    data_dir=None,
+    wiki_src=None,
+    k=100,
+    log=True,
+    yfcc_n_queries=50,
+):
+    """
+    Plot RC evolution across selectivity levels for filtered workloads.
+
+    RC_filtered = dMean / dK_filtered where dMean (average distance to all
+    training vectors) is fixed per query and dK_filtered is recomputed via
+    brute-force against the filtered subset at each selectivity level.
+
+    As the filter tightens (fewer vectors pass), dK_filtered grows and
+    RC_filtered falls → curves shift left (harder queries).
+
+    Panels:
+      arxiv_1M          – 50 queries, selectivity levels where threshold < 1M
+      wiki_1M uncorr.   – 50 queries, selectivity levels where all 1M chunk_ids
+                           are below the threshold
+      yfcc_1M           – yfcc_n_queries sampled queries, one natural filter each
+    """
+    import h5py
+    import json
+    import re
+    from sklearn.neighbors import KernelDensity
+
+    if data_dir is None:
+        data_dir = pathlib.Path("data")
+
+    # ------------------------------------------------------------------
+    # Brute-force streaming K-NN helper
+    # ------------------------------------------------------------------
+    def _brute_force_dk(query_vecs, train_ds, filter_mask, k_nb, chunk_size=50_000):
+        """
+        Compute the k_nb-th nearest distance for each query against the
+        filtered subset of train_ds.  Streams train_ds in chunks to bound
+        memory.  Returns shape (n_queries,); NaN when fewer than k_nb
+        filtered vectors exist.
+        """
+        n_total = len(filter_mask)
+        n_filtered = int(filter_mask.sum())
+        if n_filtered < k_nb:
+            return np.full(len(query_vecs), np.nan, dtype=np.float32)
+
+        q = query_vecs.astype(np.float32)
+        q_sq = (q * q).sum(axis=1, keepdims=True)            # (n_q, 1)
+        top = np.full((len(q), k_nb), np.inf, dtype=np.float32)
+
+        for start in range(0, n_total, chunk_size):
+            end = min(start + chunk_size, n_total)
+            local_mask = filter_mask[start:end]
+            if not local_mask.any():
+                continue
+            chunk = train_ds[start:end][local_mask].astype(np.float32)
+            c_sq = (chunk * chunk).sum(axis=1)
+            dot = q @ chunk.T
+            sq_d = q_sq + c_sq[None, :] - 2.0 * dot
+            d = np.sqrt(np.maximum(sq_d, 0.0))
+            combined = np.concatenate([top, d], axis=1)
+            top = np.partition(combined, k_nb - 1, axis=1)[:, :k_nb]
+
+        return np.sort(top, axis=1)[:, k_nb - 1]
+
+    def _draw_ridgeline(ax, records, sel_order, sel_labels, x_d, log_scale, cmap):
+        n = len(sel_order)
+        for idx, (key, label) in enumerate(zip(sel_order, sel_labels)):
+            vals = records[key]
+            vals = vals[~np.isnan(vals)]
+            if log_scale:
+                vals = np.log(vals[vals > 0])
+            if len(vals) < 2:
+                continue
+            kde = KernelDensity(bandwidth=0.05, kernel="gaussian")
+            kde.fit(vals[:, None])
+            density = np.exp(kde.score_samples(x_d[:, None]))
+            offset = (n - idx - 1) * 1.2
+            color = cmap(idx / max(n - 1, 1))
+            ax.plot(x_d, offset + density, color="#f0f0f0", lw=0.8, zorder=2 * idx + 1)
+            ax.fill_between(x_d, offset + density, offset, alpha=0.85,
+                            zorder=2 * idx, color=color)
+            ax.annotate(label, (x_d[-1], offset), ha="right", va="bottom",
+                        color=color, fontsize=8)
+        ax.set_yticklabels([])
+        ax.set_yticks([])
+        ax.spines[:].set_visible(False)
+
+    # ------------------------------------------------------------------
+    # arxiv_1M
+    # ------------------------------------------------------------------
+    arxiv_records = {}
+    arxiv_sel_order = []
+    arxiv_sel_labels = []
+    arxiv_unfiltered = None
+    try:
+        stats_a = (
+            query_stats.filter(pl.col("dataset") == "arxiv_1M").sort("query_index")
+        )
+        aq = pl.read_parquet(data_dir / "arxiv_1M_query_metadata.parquet")
+        with h5py.File(data_dir / "arxiv_1M.hdf5", "r") as f:
+            n_train = f["train"].shape[0]
+            test_vecs = f["test"][:]
+            d_unfiltered = f["distances"][:, k - 1]
+            dMean = stats_a["rc100"].to_numpy() * d_unfiltered
+            arxiv_unfiltered = stats_a["rc100"].to_numpy()   # baseline curve
+
+            level_rows = (
+                aq.unique(["selectivity_pct", "id_threshold"])
+                .sort("selectivity_pct")
+                .iter_rows(named=True)
+            )
+            for row in level_rows:
+                threshold = int(row["id_threshold"])
+                sel_pct   = float(row["selectivity_pct"])
+                if threshold < 0 or threshold >= n_train:
+                    continue
+                filter_mask = np.arange(n_train) < threshold
+                dk = _brute_force_dk(test_vecs, f["train"], filter_mask, k)
+                arxiv_records[sel_pct] = dMean / np.where(dk > 0, dk, np.nan)
+                arxiv_sel_order.append(sel_pct)
+                arxiv_sel_labels.append(f"{sel_pct:.0f}%")
+
+        # append unfiltered baseline at the end (easiest → bottom)
+        arxiv_records["unfiltered"] = arxiv_unfiltered
+        arxiv_sel_order.append("unfiltered")
+        arxiv_sel_labels.append("unfiltered")
+        print(f"arxiv_1M: {len(arxiv_sel_order)} levels (incl. unfiltered baseline)")
+    except Exception as exc:
+        print(f"Skipping arxiv_1M filtered RC: {exc}")
+        arxiv_records.clear(); arxiv_sel_order.clear(); arxiv_sel_labels.clear()
+
+    # ------------------------------------------------------------------
+    # wiki_1M uncorrelated – brute-force on 1M subset
+    # ------------------------------------------------------------------
+    wiki_records = {}
+    wiki_sel_order = []
+    wiki_sel_labels = []
+    wiki_unfiltered = None
+    try:
+        stats_w = (
+            query_stats
+            .filter(pl.col("dataset") == "wiki_1M")
+            .filter(pl.col("query_index") < 50)
+            .sort("query_index")
+        )
+        wq = pl.read_parquet(data_dir / "wiki_1M_query_metadata.parquet")
+        bm = pl.read_parquet(data_dir / "wiki_1M_base_metadata.parquet")
+        chunk_ids = bm["chunk_id"].to_numpy()
+        chunk_id_max = int(chunk_ids.max())
+
+        uncorr_conds = json.loads(
+            wq.filter(pl.col("correlation_type") == "uncorrelated")["filter_conditions"][0]
+        )
+        thresholds = sorted(set(
+            int(m.group(1))
+            for c in uncorr_conds
+            if (m := re.search(r"chunk_id\s*<\s*(\d+)", c))
+        ))
+
+        with h5py.File(data_dir / "wiki_1M.hdf5", "r") as f:
+            test_vecs = f["test"][:50]
+            d_unfiltered = f["distances"][:50, k - 1]
+            dMean = stats_w["rc100"].to_numpy() * d_unfiltered
+            wiki_unfiltered = stats_w["rc100"].to_numpy()
+
+            for threshold in thresholds:
+                if threshold > chunk_id_max:
+                    # entire 1M set passes → equivalent to unfiltered
+                    continue
+                filter_mask = chunk_ids < threshold
+                eff_sel = float(filter_mask.mean() * 100)
+                dk = _brute_force_dk(test_vecs, f["train"], filter_mask, k)
+                wiki_records[threshold] = dMean / np.where(dk > 0, dk, np.nan)
+                wiki_sel_order.append(threshold)
+                wiki_sel_labels.append(f"{eff_sel:.1f}%")
+
+        wiki_records["unfiltered"] = wiki_unfiltered
+        wiki_sel_order.append("unfiltered")
+        wiki_sel_labels.append("unfiltered")
+        print(f"wiki_1M uncorr: {len(wiki_sel_order)} levels (incl. unfiltered baseline)")
+    except Exception as exc:
+        print(f"Skipping wiki_1M filtered RC: {exc}")
+        wiki_records.clear(); wiki_sel_order.clear(); wiki_sel_labels.clear()
+
+    # ------------------------------------------------------------------
+    # yfcc_1M – per-query tag-intersection filter, sampled queries
+    # ------------------------------------------------------------------
+    yfcc_rc = None
+    try:
+        stats_y = (
+            query_stats.filter(pl.col("dataset") == "yfcc_1M").sort("query_index")
+        )
+        ym = pl.read_parquet(data_dir / "yfcc_1M_query_metadata.parquet")
+        yb = pl.read_parquet(data_dir / "yfcc_1M_base_metadata.parquet")
+
+        # Build tag inverted index: tag_id → sorted array of vector_ids
+        tmp: dict = {}
+        for vid, tags in enumerate(yb["tag_ids"].to_list()):
+            for tag in tags:
+                if tag not in tmp:
+                    tmp[tag] = []
+                tmp[tag].append(vid)
+        tag_inv = {t: np.array(v, dtype=np.int32) for t, v in tmp.items()}
+        del tmp
+
+        # Sample queries deterministically (first yfcc_n_queries by query_id)
+        sample = ym.sort("query_id").head(yfcc_n_queries)
+        n_train = len(yb)
+
+        with h5py.File(data_dir / "yfcc_1M.hdf5", "r") as f:
+            rc100_y = stats_y.head(yfcc_n_queries)["rc100"].to_numpy()
+            d_unfilt = f["distances"][:yfcc_n_queries, k - 1]
+            dMean_y  = rc100_y * d_unfilt
+            test_vecs = f["test"][:yfcc_n_queries]
+
+            dk_all = np.full(yfcc_n_queries, np.nan, dtype=np.float32)
+            for i, row in enumerate(sample.iter_rows(named=True)):
+                tags = row["tag_ids"] or []
+                parts = [tag_inv[t] for t in tags if t in tag_inv]
+                if not parts:
+                    continue
+                matching = np.unique(np.concatenate(parts))
+                filter_mask = np.zeros(n_train, dtype=bool)
+                filter_mask[matching] = True
+                dk = _brute_force_dk(test_vecs[i:i+1], f["train"], filter_mask, k)
+                dk_all[i] = dk[0]
+
+        yfcc_rc = dMean_y / np.where(dk_all > 0, dk_all, np.nan)
+        yfcc_rc_unfiltered = rc100_y
+        print(f"yfcc_1M: computed filtered RC for {(~np.isnan(yfcc_rc)).sum()} / {yfcc_n_queries} queries")
+    except Exception as exc:
+        print(f"Skipping yfcc_1M filtered RC: {exc}")
+
+    if not arxiv_records and not wiki_records and yfcc_rc is None:
+        print("No filtered RC data; skipping plot.")
+        return
+
+    # ------------------------------------------------------------------
+    # Plot – one panel per dataset
+    # ------------------------------------------------------------------
+    panels = []
+    if arxiv_records:
+        panels.append(("arxiv_1M", arxiv_records, arxiv_sel_order, arxiv_sel_labels))
+    if wiki_records:
+        panels.append(("wiki_1M (uncorr.)", wiki_records, wiki_sel_order, wiki_sel_labels))
+    if yfcc_rc is not None:
+        # Pack as single-level records dict for reuse of _draw_ridgeline
+        panels.append(("yfcc_1M", {"filtered": yfcc_rc, "unfiltered": yfcc_rc_unfiltered},
+                       ["filtered", "unfiltered"], ["tag-filtered", "unfiltered"]))
+
+    n_panels = len(panels)
+    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 6), squeeze=False)
+
+    for ax, (title, records, sel_order, sel_labels) in zip(axes[0], panels):
+        all_vals = np.concatenate([
+            v[~np.isnan(v)] for v in records.values() if hasattr(v, "__len__")
+        ])
+        if log:
+            all_vals = np.log(all_vals[all_vals > 0])
+        x_min = min(-0.5, math.floor(all_vals.min() * 2) / 2)
+        x_max = max(3.5, math.ceil(all_vals.max() * 2) / 2)
+        x_d = np.linspace(x_min, x_max, 1000)
+
+        n = len(sel_order)
+        cmap = mpl.colormaps.get_cmap("coolwarm_r").resampled(n)
+        _draw_ridgeline(ax, records, sel_order, sel_labels, x_d, log, cmap)
+        ax.set_xlabel("log(RC)" if log else "RC")
+        ax.set_title(title)
+
+    fig.suptitle(f"Filtered RC (k={k}): curves shift left as filter tightens → harder queries")
+    plt.tight_layout()
+    filename = out_dir / "distribution-filtered-rc.png"
+    print("Writing", filename)
+    plt.savefig(filename, dpi=300)
+    plt.close()
+
+
 def performance_gap_plot(out_dir, id_dataset, ood_dataset, summary, pca_mahalanobis_data, k=100, recall=0.9, gpu=False):
     """Plot the performance difference between in-distribution and out of distribution queries"""
     from matplotlib.gridspec import GridSpec
@@ -1308,6 +1588,10 @@ if __name__ == "__main__":
 
     if args.plot_type == "difficulty":
         plot_difficulty_ridgeline(out_dir, query_stats)
+        sys.exit(0)
+
+    if args.plot_type == "filtered-difficulty":
+        plot_filtered_rc_ridgeline(out_dir, query_stats, data_dir=pathlib.Path("data"))
         sys.exit(0)
 
     summary = pl.read_parquet(data_dir / "summary.parquet").with_columns(normalize_names)
