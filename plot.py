@@ -720,7 +720,6 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         .filter(~pl.col("dataset").str.contains("-ip"))
         .filter(~pl.col("dataset").str.contains("-dot"))
         .filter(pl.col(x).is_not_nan())
-        .filter(pl.col(x) >= 1)
         .with_columns(mean_x=pl.col(x).mean().over("dataset"))
         .with_columns(
             pl.when(pl.col("dataset").is_in(ID_DATASETS))
@@ -742,8 +741,8 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
     plt.figure(figsize=(8, fig_height))
     ax = plt.gca()
 
-    maxx = 3.5
-    minx = 0
+    maxx = max(3.5, math.ceil(query_stats[x].max()))
+    minx = min(0, math.floor(query_stats[x].min()))
     for i, dataset in enumerate(datasets):
         pdata = query_stats.filter(pl.col("dataset") == dataset)
         xvals = pdata[x].drop_nans().to_numpy()
@@ -764,8 +763,9 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
             color = "tab:green"
         ax.plot(x_d, offset + np.exp(logprob), color="#f0f0f0", lw=1, zorder=2 * i + 1)
         ax.fill_between(x_d, offset + np.exp(logprob), offset, alpha=1, zorder=2 * i, color=color)
-        label = "-".join(dataset.split("-")[:-2])
-        ax.annotate(label, (3.5, offset), ha="right", va="bottom", color=color)
+        parts = dataset.split("-")
+        label = dataset if len(parts) < 3 else "-".join(parts[:-2])
+        ax.annotate(label, (maxx, offset), ha="right", va="bottom", color=color)
 
     if log:
         ax.set_xlabel(f"log({x})")
