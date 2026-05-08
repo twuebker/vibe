@@ -51,6 +51,7 @@ OOD_DATASETS = [
     "yandex-200-cosine",
     "yi-128-ip",
 ]
+NEW_DATASETS = {"arxiv_1M", "wiki_1M", "yfcc_1M"}
 
 sns.set_palette("tab10")
 
@@ -643,9 +644,13 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
         pdata = pca_mahalanobis.filter(pl.col("dataset") == dataset)
 
-        title = "-".join(dataset.split("-")[:-2])
+        parts = dataset.split("-")
         if dataset.endswith("-binary"):
-            title = "-".join(dataset.split("-")[:-3]) + "-binary"
+            title = "-".join(parts[:-3]) + "-binary"
+        elif len(parts) >= 3:
+            title = "-".join(parts[:-2])
+        else:
+            title = dataset
 
         for part in ["train", "test"]:
             p = pdata.filter(pl.col("part") == part)
@@ -655,7 +660,8 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
             )
         ax_pca.set_xticks([])
         ax_pca.set_yticks([])
-        ax_pca.set_title(title, fontsize=7, pad=2)
+        title_color = "red" if dataset in NEW_DATASETS else "black"
+        ax_pca.set_title(title, fontsize=7, pad=2, color=title_color)
 
         sns.kdeplot(
             pdata.to_pandas(),
