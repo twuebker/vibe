@@ -365,6 +365,8 @@ def export_pca_and_mahalanobis(data_dir, output_file, sample_size=2000):
             mahalanobis_sample_train = train[np.sort(gen.choice(train.shape[0], mahal_n, replace=False))]
             train_sample_indices = np.sort(gen.choice(train.shape[0], min(train.shape[0], sample_size), replace=False))
             train = train[train_sample_indices]
+            test_sample_indices = np.sort(gen.choice(test.shape[0], min(test.shape[0], sample_size), replace=False))
+            test = test[test_sample_indices]
 
             data_to_data = mahalanobis_distance_batch(train, mahalanobis_sample_train)
             query_to_data = mahalanobis_distance_batch(test, mahalanobis_sample_train)

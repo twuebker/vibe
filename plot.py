@@ -614,7 +614,7 @@ def split_difficulties_plot(
     plt.close()
 
 
-def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
+def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3, max_scatter=2000):
     """Grid PDF: PCA scatter + Mahalanobis KDE side by side for every dataset."""
     from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
     from matplotlib.patches import Patch
@@ -654,6 +654,8 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3):
 
         for part in ["train", "test"]:
             p = pdata.filter(pl.col("part") == part)
+            if p.height > max_scatter:
+                p = p.sample(max_scatter, seed=42)
             ax_pca.scatter(
                 p["x"].to_numpy(), p["y"].to_numpy(),
                 s=0.3, alpha=0.6, color=colors[part], rasterized=True,
