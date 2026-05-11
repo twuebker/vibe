@@ -16,6 +16,8 @@ import sys
 import math
 import argparse
 import itertools
+import json
+import re
 from scipy.stats import wilcoxon
 import polars as pl
 import seaborn as sns
@@ -955,6 +957,84 @@ def plot_filtered_rc_ridgeline(
         wiki_records.clear(); wiki_sel_order.clear(); wiki_sel_labels.clear()
 
     # ------------------------------------------------------------------
+    # wiki_1M pos_correlated and neg_correlated – date-based filters
+    # ------------------------------------------------------------------
+    wiki_pos_records = {}; wiki_pos_sel_order = []; wiki_pos_sel_labels = []
+    wiki_neg_records = {}; wiki_neg_sel_order = []; wiki_neg_sel_labels = []
+    if wiki_src is not None:
+        try:
+            bm = pl.read_parquet(data_dir / "wiki_1M_base_metadata.parquet")
+            wiki_ids_arr = bm["wiki_id"].to_numpy()
+            qm_wiki = pl.read_parquet(data_dir / "wiki_1M_query_metadata.parquet")
+            persons = (
+                pl.read_csv(pathlib.Path(wiki_src) / "persons.csv",
+                            schema_overrides={"wiki_id": pl.Int32})
+                .with_columns(pl.col("birth_date").str.to_date(format="%Y-%m-%d", strict=False))
+                .drop_nulls("birth_date")
+            )
+            all_person_ids = persons["wiki_id"].to_numpy()
+            mask_all_persons = np.isin(wiki_ids_arr, all_person_ids)
+
+            pat = r"birth_date >= date\('([^']+)'\) AND p\.birth_date < date\('([^']+)'\)"
+
+            def _date_mask(start_str, end_str):
+                matched = persons.filter(
+                    (pl.col("birth_date") >= pl.lit(start_str).str.to_date())
+                    & (pl.col("birth_date") < pl.lit(end_str).str.to_date())
+                )["wiki_id"].to_numpy()
+                return np.isin(wiki_ids_arr, matched)
+
+            with h5py.File(data_dir / "wiki_1M.hdf5", "r") as f:
+                for corr_type, q_slice, rcoll, sord, slab in [
+                    ("pos_correlated", slice(0, 50),   wiki_pos_records, wiki_pos_sel_order, wiki_pos_sel_labels),
+                    ("neg_correlated", slice(50, 100), wiki_neg_records, wiki_neg_sel_order, wiki_neg_sel_labels),
+                ]:
+                    meta = qm_wiki.filter(pl.col("correlation_type") == corr_type).sort("local_query_id")
+                    fc_list = json.loads(meta["filter_conditions"][0])
+                    stats_c = (
+                        query_stats
+                        .filter(pl.col("dataset") == "wiki_1M")
+                        .filter(pl.col("query_index") >= q_slice.start,
+                                pl.col("query_index") < q_slice.stop)
+                        .sort("query_index")
+                    )
+                    test_vecs = f["test"][q_slice]
+                    d_unfiltered = f["distances"][q_slice, k - 1]
+                    dMean_c = stats_c["rc100"].to_numpy() * d_unfiltered
+
+                    # Collect unique date-range masks, deduplicated and sorted by selectivity
+                    seen: dict[str, tuple[float, np.ndarray]] = {}
+                    for cond in fc_list:
+                        m = re.search(pat, cond)
+                        mask = _date_mask(m.group(1), m.group(2)) if m else mask_all_persons
+                        sel_pct = mask.mean() * 100
+                        label = f"{sel_pct:.1f}%"
+                        if label not in seen:
+                            seen[label] = (sel_pct, mask)
+                    # Ensure the "all persons" bucket is present
+                    ap_label = f"{mask_all_persons.mean()*100:.1f}%"
+                    if ap_label not in seen:
+                        seen[ap_label] = (mask_all_persons.mean() * 100, mask_all_persons)
+
+                    for label, (_, mask) in sorted(seen.items(), key=lambda kv: kv[1][0]):
+                        if mask.sum() < k:
+                            continue
+                        dk = _brute_force_dk(test_vecs, f["train"], mask, k)
+                        rcoll[label] = dMean_c / np.where(dk > 0, dk, np.nan)
+                        sord.append(label)
+                        slab.append(label)
+
+                    rcoll["unfiltered"] = stats_c["rc100"].to_numpy()
+                    sord.append("unfiltered")
+                    slab.append("unfiltered")
+                    print(f"wiki_1M {corr_type}: {len(sord)} levels (incl. unfiltered baseline)")
+
+        except Exception as exc:
+            print(f"Skipping wiki_1M correlated RC: {exc}")
+            wiki_pos_records.clear(); wiki_pos_sel_order.clear(); wiki_pos_sel_labels.clear()
+            wiki_neg_records.clear(); wiki_neg_sel_order.clear(); wiki_neg_sel_labels.clear()
+
+    # ------------------------------------------------------------------
     # yfcc_1M – per-query tag-intersection filter, sampled queries
     # ------------------------------------------------------------------
     yfcc_rc = None
@@ -1015,6 +1095,10 @@ def plot_filtered_rc_ridgeline(
         panels.append(("arxiv_1M", arxiv_records, arxiv_sel_order, arxiv_sel_labels))
     if wiki_records:
         panels.append(("wiki_1M (uncorr.)", wiki_records, wiki_sel_order, wiki_sel_labels))
+    if wiki_pos_records:
+        panels.append(("wiki_1M (pos-corr.)", wiki_pos_records, wiki_pos_sel_order, wiki_pos_sel_labels))
+    if wiki_neg_records:
+        panels.append(("wiki_1M (neg-corr.)", wiki_neg_records, wiki_neg_sel_order, wiki_neg_sel_labels))
     if yfcc_rc is not None:
         # Pack as single-level records dict for reuse of _draw_ridgeline
         panels.append(("yfcc_1M", {"filtered": yfcc_rc, "unfiltered": yfcc_rc_unfiltered},
@@ -1551,6 +1635,7 @@ if __name__ == "__main__":
     aparser.add_argument("--pca", help="add PCA plot (only applicable for pareto plot)", action="store_true")
     aparser.add_argument("--recall", help="recall level for plot", default=0.95)
     aparser.add_argument("--count", help="number of nearest neighbors (k) to use", default=100)
+    aparser.add_argument("--wiki-src", help="path to wiki_15.4M source dir (required for correlated wiki workloads in filtered-difficulty)", default=None)
 
     args = aparser.parse_args()
 
@@ -1573,7 +1658,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args.plot_type == "filtered-difficulty":
-        plot_filtered_rc_ridgeline(out_dir, query_stats, data_dir=pathlib.Path("data"))
+        plot_filtered_rc_ridgeline(out_dir, query_stats, data_dir=pathlib.Path("data"),
+                                   wiki_src=args.wiki_src)
         sys.exit(0)
 
     summary = pl.read_parquet(data_dir / "summary.parquet").with_columns(normalize_names)

@@ -25,12 +25,14 @@ import polars as pl
 import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
+from sklearn.neighbors import KernelDensity
 
 DATA_DIR = Path("data")
 RESULTS_DIR = Path("results")
 WIKI_SRC = Path("/pub/scratch/twuebker/data/wiki_15.4M")
 PCA_SAMPLE_SIZE = 2000
 RNG_SEED = 1234
+UNIFORM_SELS = [1, 3, 5, 10, 20, 30, 40, 50, 75, 90]  # nominal selectivity %
 
 
 # ---------------------------------------------------------------------------
@@ -110,37 +112,20 @@ class AppData:
         mask_all_persons = np.isin(wiki_ids, all_person_wiki_ids)
 
         # ------ Uncorrelated ------
-        unc_meta = (
-            query_meta
-            .filter(pl.col("correlation_type") == "uncorrelated")
-            .sort("local_query_id")
-        )
-        fc_list = json.loads(unc_meta["filter_conditions"][0])
         unc_sels = {}
-        for cond in fc_list:
-            m = re.search(r"chunk_id\s*<\s*(\d+)", cond)
-            if not m:
-                # 100 % case (no WHERE clause)
-                threshold = n_train + 1
-                mask_full = np.ones(n_train, dtype=bool)
-            else:
-                threshold = int(m.group(1))
-                mask_full = chunk_ids < threshold
-            actual_sel = mask_full.mean() * 100
-            key = f"{min(actual_sel, 100):.1f}%"
+        for pct in UNIFORM_SELS:
+            threshold = round(pct / 100 * n_train)
+            mask_full = chunk_ids < threshold
+            key = f"{pct}%"
             unc_sels[key] = {
                 "mask_pca": mask_full[train_idx],
-                "sel_pct":  min(actual_sel, 100.0),
+                "sel_pct":  mask_full.mean() * 100,
             }
-        # add explicit 100% if missing
-        if "100.0%" not in unc_sels:
-            unc_sels["100.0%"] = {
-                "mask_pca": np.ones(len(train_idx), dtype=bool),
-                "sel_pct":  100.0,
-            }
-        unc_sel_keys = sorted(unc_sels, key=lambda k: unc_sels[k]["sel_pct"])
-        # keep only up to 100%
-        unc_sel_keys = [k for k in unc_sel_keys if unc_sels[k]["sel_pct"] <= 100.0]
+        unc_sels["100%"] = {
+            "mask_pca": np.ones(len(train_idx), dtype=bool),
+            "sel_pct":  100.0,
+        }
+        unc_sel_keys = [f"{pct}%" for pct in UNIFORM_SELS] + ["100%"]
 
         self.workloads["wiki_uncorrelated"] = {
             "label":       "Wiki – Uncorrelated",
@@ -226,15 +211,15 @@ class AppData:
             "per_query_filter": False,
         }
 
-        # pos_correlated: global_query_id == -1  →  no PCA positions
+        # pos_correlated: same query vectors as uncorrelated (global_query_id 0-49)
         self.workloads["wiki_pos_correlated"] = {
             "label":       "Wiki – Pos. Correlated",
             "dataset":     dataset,
             "n_queries":   50,
             "pca_train_x": tx,
             "pca_train_y": ty,
-            "query_pca_x": None,   # query vectors not in HDF5 test set
-            "query_pca_y": None,
+            "query_pca_x": qx[:50],
+            "query_pca_y": qy[:50],
             "sel_keys":    pos_sel_keys,
             "sel_data":    pos_sels,
             "per_query_filter": False,
@@ -377,6 +362,90 @@ class AppData:
 # Dash app
 # ---------------------------------------------------------------------------
 
+def _build_kde_fig(
+    mask_pca: np.ndarray,
+    tx: np.ndarray,
+    ty: np.ndarray,
+    qx: np.ndarray,
+    qy: np.ndarray,
+    sel_pct: float,
+) -> go.Figure:
+    """KDE of Mahalanobis distances to the filtered base distribution.
+
+    Fits a Gaussian to the filtered base points (in PCA space), then computes
+    the Mahalanobis distance of every filtered base point and every query to
+    that distribution.  Comparing the two curves shows whether queries are
+    inside or outside the filtered region — and how this changes with selectivity.
+    """
+    empty = go.Figure().update_layout(
+        title=dict(text="Mahalanobis dist. to filtered base distribution", font=dict(size=14)),
+        xaxis_title="Mahalanobis distance",
+        yaxis_title="density",
+        margin=dict(l=50, r=20, t=50, b=40),
+        annotations=[dict(text="Too few filtered points", x=0.5, y=0.5,
+                          xref="paper", yref="paper", showarrow=False,
+                          font=dict(size=14, color="#888"))],
+    )
+
+    if mask_pca.sum() < 10 or qx is None or len(qx) == 0:
+        return empty
+
+    # Filtered base subset in PCA space
+    pts = np.column_stack([tx[mask_pca].astype(np.float64),
+                           ty[mask_pca].astype(np.float64)])
+    mu = pts.mean(axis=0)
+    cov = np.cov(pts.T)
+    try:
+        cov_inv = np.linalg.inv(cov + np.eye(2) * 1e-8)
+    except np.linalg.LinAlgError:
+        cov_inv = np.eye(2)
+
+    def _mahal(points: np.ndarray) -> np.ndarray:
+        d = points - mu[None, :]
+        return np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", d, cov_inv, d), 0.0))
+
+    base_dists  = _mahal(pts)
+    query_dists = _mahal(np.column_stack([np.asarray(qx, dtype=np.float64),
+                                          np.asarray(qy, dtype=np.float64)]))
+
+    series = [
+        (base_dists,  "filtered base", "rgba(31,119,180,0.8)", "rgba(31,119,180,0.15)"),
+        (query_dists, "queries",        "rgba(255,127,14,0.8)", "rgba(255,127,14,0.15)"),
+    ]
+
+    x_max = max(v.max() for v, *_ in series) * 1.1
+    x_grid = np.linspace(0, x_max, 400)
+
+    traces = []
+    for vals, label, line_color, fill_color in series:
+        bw = max(1.06 * vals.std() * len(vals) ** (-0.2), 0.05)
+        kde = KernelDensity(bandwidth=bw, kernel="gaussian")
+        kde.fit(vals[:, None])
+        dens = np.exp(kde.score_samples(x_grid[:, None]))
+        traces.append(go.Scatter(
+            x=x_grid, y=dens,
+            mode="lines",
+            fill="tozeroy",
+            fillcolor=fill_color,
+            line=dict(color=line_color, width=2),
+            name=label,
+            hovertemplate="dist=%{x:.2f}<extra></extra>",
+        ))
+
+    fig = go.Figure(traces)
+    fig.update_layout(
+        title=dict(
+            text=f"Mahalanobis dist. to filtered base  ·  sel ≈ {sel_pct:.1f}%",
+            font=dict(size=14),
+        ),
+        xaxis_title="Mahalanobis distance",
+        yaxis_title="density",
+        legend=dict(x=0.6, y=0.99, bgcolor="rgba(255,255,255,0.7)"),
+        margin=dict(l=50, r=20, t=50, b=40),
+    )
+    return fig
+
+
 def build_app(data: AppData) -> dash.Dash:
     app = dash.Dash(__name__, title="VIBE Explorer")
 
@@ -426,8 +495,14 @@ def build_app(data: AppData) -> dash.Dash:
                 ],
             ),
 
-            # ---- main plot ----
-            dcc.Graph(id="scatter", style={"height": "620px"}, config={"scrollZoom": True}),
+            # ---- main plots (side by side) ----
+            html.Div(
+                style={"display": "flex", "gap": "16px"},
+                children=[
+                    dcc.Graph(id="scatter", style={"flex": "1", "height": "580px"}, config={"scrollZoom": True}),
+                    dcc.Graph(id="kde",     style={"flex": "1", "height": "580px"}),
+                ],
+            ),
         ],
     )
 
@@ -463,7 +538,7 @@ def build_app(data: AppData) -> dash.Dash:
     # Callback 2: update scatter when any control changes                 #
     # ------------------------------------------------------------------ #
     @app.callback(
-        [Output("scatter", "figure"), Output("info-panel", "children")],
+        [Output("scatter", "figure"), Output("kde", "figure"), Output("info-panel", "children")],
         [
             Input("workload-dd", "value"),
             Input("query-slider", "value"),
@@ -544,16 +619,6 @@ def build_app(data: AppData) -> dash.Dash:
                     hovertemplate=f"Query {query_idx}<extra></extra>",
                 )
             )
-        elif wl["query_pca_x"] is None:
-            # pos_correlated: no PCA position available
-            traces.append(
-                go.Scatter(
-                    x=[None], y=[None],
-                    mode="markers",
-                    marker=dict(size=12, color="crimson", symbol="star"),
-                    name="query (no PCA pos.)",
-                )
-            )
 
         fig = go.Figure(traces)
         fig.update_layout(
@@ -563,21 +628,23 @@ def build_app(data: AppData) -> dash.Dash:
             ),
             xaxis_title="PC1",
             yaxis_title="PC2",
+            yaxis=dict(scaleanchor="x", scaleratio=1),
             legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.7)"),
             margin=dict(l=50, r=20, t=50, b=40),
             uirevision=workload_key,   # preserve zoom when only query/sel changes
         )
+
+        kde_fig = _build_kde_fig(mask_pca, tx, ty,
+                                 wl.get("query_pca_x"), wl.get("query_pca_y"),
+                                 sel_pct)
 
         info = html.Div([
             html.Div(f"Filtered pts (PCA sample): {n_filtered} / {n_total}"),
             html.Div(f"Actual selectivity: {sel_pct:.2f}%"),
             html.Div(extra_info, style={"color": "#555", "fontSize": "0.85em"}) if extra_info else html.Div(),
         ])
-        if wl["query_pca_x"] is None:
-            info = html.Div([info, html.Div("⚠ Query vectors not in HDF5 test set (pos. corr.)",
-                                             style={"color": "orange"})])
 
-        return fig, info
+        return fig, kde_fig, info
 
     return app
 
