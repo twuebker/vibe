@@ -43,6 +43,15 @@ ID_DATASETS_ADDITIONAL = [
     "glove-200-cosine",
     "landmark-dino-768-cosine",
     "simplewiki-openai-3072-normalized",
+    # ANN Benchmarks
+    "coco-i2i-512-angular",
+    "deep-image-96-angular",
+    "fashion-mnist-784-euclidean",
+    "gist-960-euclidean",
+    "glove-100-angular",
+    "mnist-784-euclidean",
+    "nytimes-256-angular",
+    "sift-128-euclidean",
 ]
 # The list of out of distribution datasets
 OOD_DATASETS = [
@@ -52,6 +61,8 @@ OOD_DATASETS = [
     "imagenet-align-640-normalized",
     "yandex-200-cosine",
     "yi-128-ip",
+    # ANN Benchmarks
+    "coco-t2i-512-angular",
 ]
 NEW_DATASETS = {"arxiv_1M", "wiki_1M", "yfcc_1M"}
 
@@ -664,6 +675,8 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3, max
             )
         ax_pca.set_xticks([])
         ax_pca.set_yticks([])
+        ax_pca.set_xlabel("PC1", fontsize=6, labelpad=2)
+        ax_pca.set_ylabel("PC2", fontsize=6, labelpad=2)
         title_color = "red" if dataset in NEW_DATASETS else "black"
         ax_pca.set_title(title, fontsize=7, pad=2, color=title_color)
 
@@ -680,7 +693,7 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3, max
         )
         ax_kde.set_xticks([])
         ax_kde.set_yticks([])
-        ax_kde.set_xlabel("")
+        ax_kde.set_xlabel("Mahalanobis distance", fontsize=6, labelpad=2)
         ax_kde.set_ylabel("")
 
     for i in range(n, n_rows * n_cols):
@@ -726,11 +739,11 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         .filter(pl.col(x).is_not_nan())
         .with_columns(mean_x=pl.col(x).mean().over("dataset"))
         .with_columns(
-            pl.when(pl.col("dataset").is_in(ID_DATASETS))
+            pl.when(pl.col("dataset").is_in(ID_DATASETS + ID_DATASETS_ADDITIONAL))
             .then(pl.lit("in-distribution"))
             .when(pl.col("dataset").is_in(OOD_DATASETS))
             .then(pl.lit("out-of-distribution"))
-            .otherwise(pl.lit("ann-benchmarks"))
+            .otherwise(pl.lit("unknown"))
             .alias("dataset-type"),
         )
         .sort("mean_x", descending=True)
@@ -759,7 +772,7 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         logprob = kde.score_samples(x_d[:, None])
 
         offset = (len(datasets) - i - 1) * 1.5
-        if dataset in ID_DATASETS:
+        if dataset in ID_DATASETS + ID_DATASETS_ADDITIONAL:
             color = "tab:blue"
         elif dataset in OOD_DATASETS:
             color = "tab:orange"
