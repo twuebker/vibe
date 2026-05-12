@@ -949,7 +949,7 @@ def plot_filtered_rc_ridgeline(
         arxiv_records.clear(); arxiv_sel_order.clear(); arxiv_sel_labels.clear()
 
     # ------------------------------------------------------------------
-    # wiki_1M uncorrelated – brute-force on 1M subset
+    # wiki_1M uncorrelated – chunk_id threshold filters
     # ------------------------------------------------------------------
     wiki_records = {}
     wiki_sel_order = []
@@ -965,10 +965,10 @@ def plot_filtered_rc_ridgeline(
         bm = pl.read_parquet(data_dir / "wiki_1M_base_metadata.parquet")
         chunk_ids = bm["chunk_id"].to_numpy()
 
-        with h5py.File(data_dir / "wiki_1M.hdf5", "r") as f:
+        with h5py.File(data_dir / "wiki_1M_uncorrelated.h5", "r") as f:
             n_train_w = f["train"].shape[0]
-            test_vecs = f["test"][:50]
-            d_unfiltered = f["distances"][:50, k - 1]
+            test_vecs = f["test"][:]
+            d_unfiltered = f["distances"][:, k - 1]
             dMean = stats_w["rc100"].to_numpy() * d_unfiltered
             wiki_unfiltered = stats_w["rc100"].to_numpy()
 
@@ -993,10 +993,9 @@ def plot_filtered_rc_ridgeline(
     # ------------------------------------------------------------------
     # wiki_1M pos_correlated and neg_correlated – date-based filters
     #
-    # Each workload now lives in its own HDF5 file (50 queries, index 0–49).
-    # Stats (rc100, used to reconstruct dMean) are still in the unified
-    # wiki_1M entry: query_index 0–49 = pos/uncorr queries,
-    #                query_index 50–99 = neg queries.
+    # Each workload lives in its own HDF5 file (50 queries, index 0–49).
+    # Stats (rc100, used to reconstruct dMean) are in the unified wiki_1M
+    # entry: query_index 0–49 = pos/uncorr queries, 50–99 = neg queries.
     # ------------------------------------------------------------------
     wiki_pos_records = {}; wiki_pos_sel_order = []; wiki_pos_sel_labels = []
     wiki_neg_records = {}; wiki_neg_sel_order = []; wiki_neg_sel_labels = []
@@ -1013,7 +1012,7 @@ def plot_filtered_rc_ridgeline(
             all_person_ids = persons["wiki_id"].to_numpy()
             mask_all_persons = np.isin(wiki_ids_arr, all_person_ids)
 
-            pat = r"birth_date >= date\('([^']+)'\) AND p\.birth_date < date\('([^']+)'\)"
+            pat_date = r"birth_date >= date\('([^']+)'\) AND p\.birth_date < date\('([^']+)'\)"
 
             def _date_mask(start_str, end_str):
                 matched = persons.filter(
@@ -1032,6 +1031,19 @@ def plot_filtered_rc_ridgeline(
             ]:
                 qm = pl.read_parquet(data_dir / f"wiki_1M_{corr_type}_query_metadata.parquet")
                 fc_list = json.loads(qm["filter_conditions"][0])
+                # Collect unique date-range masks, deduplicated and sorted by selectivity
+                seen: dict[str, tuple[float, np.ndarray]] = {}
+                for cond in fc_list:
+                    m = re.search(pat_date, cond)
+                    mask = _date_mask(m.group(1), m.group(2)) if m else mask_all_persons
+                    sel_pct = mask.mean() * 100
+                    label = f"{sel_pct:.1f}%"
+                    if label not in seen:
+                        seen[label] = (sel_pct, mask)
+                ap_label = f"{mask_all_persons.mean()*100:.1f}%"
+                if ap_label not in seen:
+                    seen[ap_label] = (mask_all_persons.mean() * 100, mask_all_persons)
+
                 stats_c = (
                     query_stats
                     .filter(pl.col("dataset") == "wiki_1M")
@@ -1040,27 +1052,14 @@ def plot_filtered_rc_ridgeline(
                     .sort("query_index")
                 )
                 with h5py.File(data_dir / hdf5_file, "r") as f:
-                    # All 50 queries live at index 0–49 in the split file
                     test_vecs = f["test"][:]
                     d_unfiltered = f["distances"][:, k - 1]
                     dMean_c = stats_c["rc100"].to_numpy() * d_unfiltered
 
-                    # Collect unique date-range masks, deduplicated and sorted by selectivity
-                    seen: dict[str, tuple[float, np.ndarray]] = {}
-                    for cond in fc_list:
-                        m = re.search(pat, cond)
-                        mask = _date_mask(m.group(1), m.group(2)) if m else mask_all_persons
-                        sel_pct = mask.mean() * 100
-                        label = f"{sel_pct:.1f}%"
-                        if label not in seen:
-                            seen[label] = (sel_pct, mask)
-                    ap_label = f"{mask_all_persons.mean()*100:.1f}%"
-                    if ap_label not in seen:
-                        seen[ap_label] = (mask_all_persons.mean() * 100, mask_all_persons)
-
-                    for label, (_, mask) in sorted(seen.items(), key=lambda kv: kv[1][0]):
+                    for _, (sel_pct, mask) in sorted(seen.items(), key=lambda kv: kv[1][0]):
                         if mask.sum() < k:
                             continue
+                        label = f"{sel_pct:.1f}%"
                         dk = _brute_force_dk(test_vecs, f["train"], mask, k)
                         rcoll[label] = dMean_c / np.where(dk > 0, dk, np.nan)
                         sord.append(label)
