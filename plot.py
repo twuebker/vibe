@@ -847,6 +847,8 @@ def plot_filtered_rc_ridgeline(
       yfcc_1M           – yfcc_n_queries sampled queries, one natural filter each
     """
     import h5py
+    import json
+    import re
     from sklearn.neighbors import KernelDensity
 
     if data_dir is None:
@@ -1124,7 +1126,7 @@ def plot_filtered_rc_ridgeline(
     except Exception as exc:
         print(f"Skipping yfcc_1M filtered RC: {exc}")
 
-    if not arxiv_records and not wiki_records and yfcc_rc is None:
+    if not arxiv_records and not wiki_records and not wiki_pos_records and not wiki_neg_records and yfcc_rc is None:
         print("No filtered RC data; skipping plot.")
         return
 
@@ -1676,7 +1678,7 @@ if __name__ == "__main__":
     aparser.add_argument("--pca", help="add PCA plot (only applicable for pareto plot)", action="store_true")
     aparser.add_argument("--recall", help="recall level for plot", default=0.95)
     aparser.add_argument("--count", help="number of nearest neighbors (k) to use", default=100)
-    aparser.add_argument("--wiki-src", help="path to wiki_15.4M source dir (required for correlated wiki workloads in filtered-difficulty)", default=None)
+    aparser.add_argument("--wiki-src", help="path to wiki_15.4M source dir for correlated wiki workloads in filtered-difficulty", default="../data/wiki_15.4M")
 
     args = aparser.parse_args()
 
