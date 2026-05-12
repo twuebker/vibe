@@ -711,7 +711,22 @@ def dataset_geometry_grid(out_dir, pca_mahalanobis, datasets=None, n_cols=3, max
     plt.close(fig)
 
 
-def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
+def _dim_from_hdf5(dataset: str, data_dir) -> int | None:
+    """Return vector dimension for a dataset by peeking at its HDF5 train split."""
+    import h5py, pathlib
+    data_dir = pathlib.Path(data_dir)
+    candidates = list(data_dir.glob(f"{dataset}.hdf5")) + list(data_dir.glob(f"{dataset}.h5")) + list(data_dir.glob(f"{dataset}*.hdf5")) + list(data_dir.glob(f"{dataset}*.h5"))
+    for path in candidates:
+        try:
+            with h5py.File(path, "r") as f:
+                if "train" in f:
+                    return f["train"].shape[1]
+        except Exception:
+            continue
+    return None
+
+
+def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True, data_dir=None):
     # adapted from https://matplotlib.org/matplotblog/posts/create-ridgeplots-in-matplotlib/
     from sklearn.neighbors import KernelDensity
     import numpy as np
@@ -783,6 +798,10 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         parts = dataset.split("-")
         label = dataset if len(parts) < 3 else "-".join(parts[:-2])
         dim = parts[-2] if len(parts) >= 3 and parts[-2].isdigit() else None
+        if dim is None and data_dir is not None:
+            hdf5_dim = _dim_from_hdf5(dataset, data_dir)
+            if hdf5_dim is not None:
+                dim = str(hdf5_dim)
         label = f"{label} ({dim}d)" if dim else label
         ax.annotate(label, (maxx, offset), ha="right", va="bottom", color=color)
 
@@ -1260,7 +1279,7 @@ def performance_gap_plot(out_dir, id_dataset, ood_dataset, summary, pca_mahalano
     plt.close()
 
 
-def paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis):
+def paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis, data_dir=None):
     selected = [
         "glass",
         "hnswlib",
@@ -1273,7 +1292,7 @@ def paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis
         "symphonyqg",
     ]
 
-    plot_difficulty_ridgeline(out_dir, query_stats)
+    plot_difficulty_ridgeline(out_dir, query_stats, data_dir=data_dir)
 
     radar_at_recall_plot(
         out_dir,
@@ -1677,7 +1696,7 @@ if __name__ == "__main__":
     query_stats = pl.read_parquet(data_dir / "stats.parquet").with_columns(normalize_names)
 
     if args.plot_type == "difficulty":
-        plot_difficulty_ridgeline(out_dir, query_stats)
+        plot_difficulty_ridgeline(out_dir, query_stats, data_dir=data_dir)
         sys.exit(0)
 
     if args.plot_type == "filtered-difficulty":
@@ -1808,6 +1827,6 @@ if __name__ == "__main__":
     elif args.plot_type == "index-size-table":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="index_size")
     elif args.plot_type == "paper":
-        paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis)
+        paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis, data_dir=data_dir)
     else:
         raise ValueError(f"invalid plot type: {args.plot_type}")
