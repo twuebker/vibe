@@ -91,8 +91,11 @@ class AppData:
 
         query_meta = pl.read_parquet(DATA_DIR / "wiki_1M_query_metadata.parquet")
 
-        with h5py.File(DATA_DIR / "wiki_1M.hdf5") as f:
-            n_test = f["test"].shape[0]  # 100
+        # n_test only advances the RNG past the test_idx draw; train_idx is
+        # unaffected, so we read it from pca_df rather than opening the HDF5.
+        n_test = self.pca_df.filter(
+            (pl.col("dataset") == dataset) & (pl.col("part") == "test")
+        ).height
 
         train_idx, _ = reconstruct_pca_sample_indices(n_train, n_test)
         tx, ty, qx, qy = pca_xy(self.pca_df, dataset)

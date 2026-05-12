@@ -782,6 +782,8 @@ def plot_difficulty_ridgeline(out_dir, query_stats, x="rc100", log=True):
         ax.fill_between(x_d, offset + np.exp(logprob), offset, alpha=1, zorder=2 * i, color=color)
         parts = dataset.split("-")
         label = dataset if len(parts) < 3 else "-".join(parts[:-2])
+        dim = parts[-2] if len(parts) >= 3 and parts[-2].isdigit() else None
+        label = f"{label} ({dim}d)" if dim else label
         ax.annotate(label, (maxx, offset), ha="right", va="bottom", color=color)
 
     if log:
@@ -971,6 +973,11 @@ def plot_filtered_rc_ridgeline(
 
     # ------------------------------------------------------------------
     # wiki_1M pos_correlated and neg_correlated – date-based filters
+    #
+    # Each workload now lives in its own HDF5 file (50 queries, index 0–49).
+    # Stats (rc100, used to reconstruct dMean) are still in the unified
+    # wiki_1M entry: query_index 0–49 = pos/uncorr queries,
+    #                query_index 50–99 = neg queries.
     # ------------------------------------------------------------------
     wiki_pos_records = {}; wiki_pos_sel_order = []; wiki_pos_sel_labels = []
     wiki_neg_records = {}; wiki_neg_sel_order = []; wiki_neg_sel_labels = []
@@ -978,7 +985,6 @@ def plot_filtered_rc_ridgeline(
         try:
             bm = pl.read_parquet(data_dir / "wiki_1M_base_metadata.parquet")
             wiki_ids_arr = bm["wiki_id"].to_numpy()
-            qm_wiki = pl.read_parquet(data_dir / "wiki_1M_query_metadata.parquet")
             persons = (
                 pl.read_csv(pathlib.Path(wiki_src) / "persons.csv",
                             schema_overrides={"wiki_id": pl.Int32})
@@ -997,22 +1003,27 @@ def plot_filtered_rc_ridgeline(
                 )["wiki_id"].to_numpy()
                 return np.isin(wiki_ids_arr, matched)
 
-            with h5py.File(data_dir / "wiki_1M.hdf5", "r") as f:
-                for corr_type, q_slice, rcoll, sord, slab in [
-                    ("pos_correlated", slice(0, 50),   wiki_pos_records, wiki_pos_sel_order, wiki_pos_sel_labels),
-                    ("neg_correlated", slice(50, 100), wiki_neg_records, wiki_neg_sel_order, wiki_neg_sel_labels),
-                ]:
-                    meta = qm_wiki.filter(pl.col("correlation_type") == corr_type).sort("local_query_id")
-                    fc_list = json.loads(meta["filter_conditions"][0])
-                    stats_c = (
-                        query_stats
-                        .filter(pl.col("dataset") == "wiki_1M")
-                        .filter(pl.col("query_index") >= q_slice.start,
-                                pl.col("query_index") < q_slice.stop)
-                        .sort("query_index")
-                    )
-                    test_vecs = f["test"][q_slice]
-                    d_unfiltered = f["distances"][q_slice, k - 1]
+            for corr_type, hdf5_file, stats_slice, rcoll, sord, slab in [
+                # pos: own HDF5 (50 queries at 0–49); stats query_index 0–49
+                ("pos_correlated", "wiki_1M_pos_correlated.h5", slice(0, 50),
+                 wiki_pos_records, wiki_pos_sel_order, wiki_pos_sel_labels),
+                # neg: own HDF5 (50 queries at 0–49); stats query_index 50–99
+                ("neg_correlated", "wiki_1M_neg_correlated.h5", slice(50, 100),
+                 wiki_neg_records, wiki_neg_sel_order, wiki_neg_sel_labels),
+            ]:
+                qm = pl.read_parquet(data_dir / f"wiki_1M_{corr_type}_query_metadata.parquet")
+                fc_list = json.loads(qm["filter_conditions"][0])
+                stats_c = (
+                    query_stats
+                    .filter(pl.col("dataset") == "wiki_1M")
+                    .filter(pl.col("query_index") >= stats_slice.start,
+                            pl.col("query_index") < stats_slice.stop)
+                    .sort("query_index")
+                )
+                with h5py.File(data_dir / hdf5_file, "r") as f:
+                    # All 50 queries live at index 0–49 in the split file
+                    test_vecs = f["test"][:]
+                    d_unfiltered = f["distances"][:, k - 1]
                     dMean_c = stats_c["rc100"].to_numpy() * d_unfiltered
 
                     # Collect unique date-range masks, deduplicated and sorted by selectivity
@@ -1024,7 +1035,6 @@ def plot_filtered_rc_ridgeline(
                         label = f"{sel_pct:.1f}%"
                         if label not in seen:
                             seen[label] = (sel_pct, mask)
-                    # Ensure the "all persons" bucket is present
                     ap_label = f"{mask_all_persons.mean()*100:.1f}%"
                     if ap_label not in seen:
                         seen[ap_label] = (mask_all_persons.mean() * 100, mask_all_persons)
