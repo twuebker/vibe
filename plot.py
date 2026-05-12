@@ -927,7 +927,7 @@ def plot_filtered_rc_ridgeline(
         with h5py.File(data_dir / "arxiv_1M.hdf5", "r") as f:
             n_train = f["train"].shape[0]
             test_vecs = f["test"][:]
-            d_unfiltered = f["distances"][:, k - 1]
+            d_unfiltered = np.sqrt(f["distances"][:, k - 1])
             dMean = stats_a["rc100"].to_numpy() * d_unfiltered
             arxiv_unfiltered = stats_a["rc100"].to_numpy()   # baseline curve
 
@@ -970,7 +970,7 @@ def plot_filtered_rc_ridgeline(
         with h5py.File(data_dir / "wiki_1M_uncorrelated.h5", "r") as f:
             n_train_w = f["train"].shape[0]
             test_vecs = f["test"][:]
-            d_unfiltered = f["distances"][:, k - 1]
+            d_unfiltered = np.sqrt(f["distances"][:, k - 1])
             dMean = stats_w["rc100"].to_numpy() * d_unfiltered
             wiki_unfiltered = stats_w["rc100"].to_numpy()
 
@@ -1055,7 +1055,7 @@ def plot_filtered_rc_ridgeline(
                 )
                 with h5py.File(data_dir / hdf5_file, "r") as f:
                     test_vecs = f["test"][:]
-                    d_unfiltered = f["distances"][:, k - 1]
+                    d_unfiltered = np.sqrt(f["distances"][:, k - 1])
                     dMean_c = stats_c["rc100"].to_numpy() * d_unfiltered
 
                     for _, (sel_pct, mask) in sorted(seen.items(), key=lambda kv: kv[1][0]):
@@ -1104,7 +1104,7 @@ def plot_filtered_rc_ridgeline(
 
         with h5py.File(data_dir / "yfcc_1M.hdf5", "r") as f:
             rc100_y = stats_y.head(yfcc_n_queries)["rc100"].to_numpy()
-            d_unfilt = f["distances"][:yfcc_n_queries, k - 1]
+            d_unfilt = np.sqrt(f["distances"][:yfcc_n_queries, k - 1])
             dMean_y  = rc100_y * d_unfilt
             test_vecs = f["test"][:yfcc_n_queries]
 
