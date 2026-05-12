@@ -1696,7 +1696,7 @@ if __name__ == "__main__":
     query_stats = pl.read_parquet(data_dir / "stats.parquet").with_columns(normalize_names)
 
     if args.plot_type == "difficulty":
-        plot_difficulty_ridgeline(out_dir, query_stats, data_dir=data_dir)
+        plot_difficulty_ridgeline(out_dir, query_stats, data_dir=pathlib.Path("data"))
         sys.exit(0)
 
     if args.plot_type == "filtered-difficulty":
@@ -1827,6 +1827,6 @@ if __name__ == "__main__":
     elif args.plot_type == "index-size-table":
         print_metric_table(summary, recall=recall, k=count, algorithms=algorithms, metric="index_size")
     elif args.plot_type == "paper":
-        paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis, data_dir=data_dir)
+        paper(out_dir, all_algorithms, summary, detail, query_stats, pca_mahalanobis, data_dir=pathlib.Path("data"))
     else:
         raise ValueError(f"invalid plot type: {args.plot_type}")
