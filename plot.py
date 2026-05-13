@@ -1058,15 +1058,27 @@ def plot_filtered_rc_ridgeline(
                     d_unfiltered = np.sqrt(f["distances"][:, k - 1])
                     dMean_c = stats_c["rc100"].to_numpy() * d_unfiltered
 
+                    print(f"\n[DEBUG] {corr_type}")
+                    print(f"  test_vecs norm (first 3): {np.linalg.norm(test_vecs[:3], axis=1).tolist()}")
+                    print(f"  d_unfiltered (first 3):   {d_unfiltered[:3].tolist()}")
+                    print(f"  dMean_c      (first 3):   {dMean_c[:3].tolist()}")
+                    print(f"  rc100        (first 3):   {stats_c['rc100'][:3].to_list()}")
+
                     for _, (sel_pct, mask) in sorted(seen.items(), key=lambda kv: kv[1][0]):
                         if mask.sum() < k:
                             continue
                         label = f"{sel_pct:.1f}%"
                         dk = _brute_force_dk(test_vecs, f["train"], mask, k)
-                        rcoll[label] = dMean_c / np.where(dk > 0, dk, np.nan)
+                        rc_filt = dMean_c / np.where(dk > 0, dk, np.nan)
+                        rcoll[label] = rc_filt
                         sord.append(label)
                         slab.append(label)
+                        print(f"  sel={label:7s}  n_filt={mask.sum():>7d}"
+                              f"  dk_mean={np.nanmean(dk):.4f}"
+                              f"  rc_mean={np.nanmean(rc_filt):.4f}"
+                              f"  rc_med={np.nanmedian(rc_filt):.4f}")
 
+                    print(f"  unfiltered rc100 mean: {stats_c['rc100'].mean():.4f}")
                     rcoll["unfiltered"] = stats_c["rc100"].to_numpy()
                     sord.append("unfiltered")
                     slab.append("unfiltered")
